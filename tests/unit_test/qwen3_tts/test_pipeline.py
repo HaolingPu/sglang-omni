@@ -54,6 +54,7 @@ from sglang_omni.models.qwen3_tts.streaming_vocoder import (
 )
 from sglang_omni.models.registry import PIPELINE_CONFIG_REGISTRY
 from sglang_omni.pipeline.stage.stream_queue import StreamItem
+from sglang_omni.profiler.event_recorder import reset_active_stage, set_active_stage
 from sglang_omni.proto import OmniRequest, StagePayload
 from sglang_omni.sampling import seed as sampling_seed
 from sglang_omni.scheduling.message import IncomingMessage
@@ -5189,6 +5190,82 @@ def test_qwen3_tts_async_followup_flushes_before_result() -> None:
     expected = all_codes[:, 0].to(torch.float32).repeat_interleave(4).numpy()
     np.testing.assert_array_equal(streamed, expected)
     assert payload.request_id not in scheduler.stream_states
+
+
+def test_qwen3_tts_async_decode_records_request_events(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ActiveRecorder:
+        def is_active(self) -> bool:
+            return True
+
+    events: list[tuple[str, str, dict[str, int | float | str]]] = []
+    event_stage_names: set[str | None] = set()
+
+    def record_event(
+        *,
+        request_id: str,
+        stage: str | None,
+        event_name: str,
+        metadata: dict[str, int | float | str],
+    ) -> None:
+        events.append((request_id, event_name, metadata))
+        event_stage_names.add(stage)
+
+    monkeypatch.setattr(qwen3_streaming_vocoder, "get_recorder", ActiveRecorder)
+    monkeypatch.setattr(qwen3_streaming_vocoder, "emit_request_event", record_event)
+    scheduler = Qwen3TTSStreamingVocoderScheduler(
+        FakeQwen3TTSSpeechTokenizer(),
+        device="cpu",
+        stream_stride=1,
+        stream_followup_stride=2,
+        initial_chunk_frames=1,
+        stream_left_context_frames=2,
+        async_decode=True,
+    )
+    all_codes = torch.tensor([[1, 2], [3, 4], [5, 6]], dtype=torch.long)
+    payload = make_payload(inputs="target", params={"stream": True})
+    payload.data = Qwen3TTSState(audio_codes=all_codes, completion_tokens=3).to_dict()
+
+    stage_token = set_active_stage("vocoder")
+    try:
+        scheduler.on_serving_start()
+    finally:
+        reset_active_stage(stage_token)
+    try:
+        scheduler.handle_streaming_new_request(payload.request_id, payload)
+        scheduler.handle_stream_chunk(
+            payload.request_id,
+            qwen3_tts_stream_item(all_codes[:1], chunk_id=0, ref_code_len=0),
+        )
+        assert scheduler.outbox.get(timeout=1).type == "stream"
+        scheduler.handle_stream_chunk(
+            payload.request_id,
+            qwen3_tts_stream_item(all_codes[1:], chunk_id=1),
+        )
+        scheduler.handle_stream_done(payload.request_id)
+        assert scheduler.outbox.get(timeout=1).type == "stream"
+        assert scheduler.outbox.get(timeout=1).type == "result"
+    finally:
+        scheduler.stop()
+
+    decode_steps = (
+        "qwen3_tts_vocoder_decode_enqueued",
+        "qwen3_tts_vocoder_decode_dispatched",
+        "qwen3_tts_vocoder_decode_launched",
+        "qwen3_tts_vocoder_decode_resolved",
+        "qwen3_tts_vocoder_decode_committed",
+    )
+    assert {request_id for request_id, _, _ in events} == {payload.request_id}
+    assert event_stage_names == {"vocoder"}
+    assert [event_name for _, event_name, _ in events] == [*decode_steps, *decode_steps]
+    committed = [
+        metadata
+        for _, event_name, metadata in events
+        if event_name == "qwen3_tts_vocoder_decode_committed"
+    ]
+    assert [metadata["emitted_generated_frames"] for metadata in committed] == [1, 3]
+    assert [metadata["samples"] for metadata in committed] == [4, 8]
 
 
 def test_qwen3_tts_async_initial_batches_ready_requests() -> None:
