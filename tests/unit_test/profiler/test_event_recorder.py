@@ -5,12 +5,14 @@ from __future__ import annotations
 
 import json
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pytest
 
 from sglang_omni.profiler.event_recorder import (
     RequestEvent,
+    RequestEventBuffer,
     RequestEventRecorder,
     emit,
     get_recorder,
@@ -155,6 +157,54 @@ def test_module_level_emit_uses_singleton(tmp_path: Path) -> None:
     rec.stop()
     events = read_events(path)
     assert any(e["event_name"] == "request_admission" for e in events)
+
+
+def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
+    tmp_path: Path,
+) -> None:
+    recorder = get_recorder()
+    path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
+    buffer = RequestEventBuffer()
+    captured = threading.Event()
+    release = threading.Event()
+
+    def worker() -> None:
+        metadata: dict[str, int | float | str] = {"frames": 3}
+        buffer.capture(
+            request_id="worker",
+            event_name="decode_committed",
+            metadata=metadata,
+            timestamp_ns=100,
+        )
+        metadata["frames"] = 7
+        captured.set()
+        assert release.wait(timeout=5)
+        buffer.flush(stage="vocoder")
+        buffer.flush(stage="vocoder")
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        completion = executor.submit(worker)
+        try:
+            assert captured.wait(timeout=5)
+            buffer.capture(
+                request_id="ingest",
+                event_name="decode_enqueued",
+                metadata={"frames": 1},
+                timestamp_ns=200,
+            )
+            buffer.flush(stage="vocoder")
+            assert [event["request_id"] for event in read_events(path)] == ["ingest"]
+        finally:
+            release.set()
+        completion.result(timeout=5)
+
+    recorder.stop()
+    events = read_events(path)
+    assert [event["request_id"] for event in events] == ["ingest", "worker"]
+    assert [event["timestamp_ns"] for event in events] == [200, 100]
+    assert [event["metadata"] for event in events] == [{"frames": 1}, {"frames": 3}]
+    assert {event["stage"] for event in events} == {"vocoder"}
+    assert {event["run_id"] for event in events} == {"buffered"}
 
 
 def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:

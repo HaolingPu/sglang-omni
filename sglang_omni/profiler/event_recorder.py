@@ -76,6 +76,49 @@ class RequestEvent:
         return asdict(self)
 
 
+@dataclass(frozen=True, kw_only=True)
+class PendingRequestEvent:
+    request_id: str
+    event_name: str
+    metadata: dict[str, int | float | str]
+    timestamp_ns: int
+
+
+class RequestEventBuffer(threading.local):
+    """Capture scalar records on a thread, then flush outside its serving locks."""
+
+    def __init__(self) -> None:
+        self.records: list[PendingRequestEvent] = []
+
+    def capture(
+        self,
+        *,
+        request_id: str,
+        event_name: str,
+        metadata: dict[str, int | float | str],
+        timestamp_ns: int,
+    ) -> None:
+        self.records.append(
+            PendingRequestEvent(
+                request_id=request_id,
+                event_name=event_name,
+                metadata=metadata.copy(),
+                timestamp_ns=timestamp_ns,
+            )
+        )
+
+    def flush(self, *, stage: str | None) -> None:
+        for record in self.records:
+            emit(
+                request_id=record.request_id,
+                stage=stage,
+                event_name=record.event_name,
+                metadata=record.metadata,
+                timestamp_ns=record.timestamp_ns,
+            )
+        self.records.clear()
+
+
 class RequestEventRecorder:
     """Process-local JSONL event sink. Toggled via profiler control plane."""
 
