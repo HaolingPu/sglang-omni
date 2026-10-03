@@ -7831,7 +7831,7 @@ def test_qwen3_tts_incremental_failure_requeues_instead_of_aborting(
     scheduler.state_lock = state_lock
     written_under_state_lock: list[bool] = []
     monkeypatch.setattr(
-        qwen3_streaming_vocoder,
+        event_recorder,
         "get_recorder",
         lambda: SimpleNamespace(is_active=lambda: True),
     )

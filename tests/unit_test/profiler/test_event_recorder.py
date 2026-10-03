@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import json
 import threading
+import time
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from sglang_omni.profiler.event_recorder import (
     RequestEvent,
     RequestEventBuffer,
     RequestEventRecorder,
+    RequestEventSnapshot,
     emit,
     get_recorder,
     json_default,
@@ -168,43 +171,83 @@ def test_buffer_flush_preserves_thread_ownership_and_capture_snapshot(
     captured = threading.Event()
     release = threading.Event()
 
-    def worker() -> None:
+    def worker() -> tuple[int, int]:
         metadata: dict[str, int | float | str] = {"frames": 3}
+        before_capture_ns = time.time_ns()
         buffer.capture(
-            request_id="worker",
-            event_name="decode_committed",
-            metadata=metadata,
-            timestamp_ns=100,
+            "decode_committed",
+            (
+                RequestEventSnapshot(request_id=request_id, metadata=metadata)
+                for request_id in ("worker-a", "worker-b")
+            ),
+            {"samples": 12},
         )
+        after_capture_ns = time.time_ns()
         metadata["frames"] = 7
         captured.set()
         assert release.wait(timeout=5)
         buffer.flush(stage="vocoder")
         buffer.flush(stage="vocoder")
+        return before_capture_ns, after_capture_ns
 
-    with ThreadPoolExecutor(max_workers=1) as executor:
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="decode") as executor:
         completion = executor.submit(worker)
         try:
             assert captured.wait(timeout=5)
-            buffer.capture(
-                request_id="ingest",
-                event_name="decode_enqueued",
-                metadata={"frames": 1},
-                timestamp_ns=200,
+            buffer.emit(
+                "decode_enqueued",
+                (RequestEventSnapshot(request_id="ingest", metadata={"frames": 1}),),
+                {},
+                stage="vocoder",
             )
-            buffer.flush(stage="vocoder")
             assert [event["request_id"] for event in read_events(path)] == ["ingest"]
         finally:
             release.set()
-        completion.result(timeout=5)
+        before_capture_ns, after_capture_ns = completion.result(timeout=5)
 
     recorder.stop()
     events = read_events(path)
-    assert [event["request_id"] for event in events] == ["ingest", "worker"]
-    assert [event["timestamp_ns"] for event in events] == [200, 100]
-    assert [event["metadata"] for event in events] == [{"frames": 1}, {"frames": 3}]
+    assert [event["request_id"] for event in events] == [
+        "ingest",
+        "worker-a",
+        "worker-b",
+    ]
+    assert before_capture_ns <= events[1]["timestamp_ns"] <= after_capture_ns
+    assert events[1]["timestamp_ns"] == events[2]["timestamp_ns"]
+    assert events[1]["timestamp_ns"] <= events[0]["timestamp_ns"]
+    assert events[1]["metadata"]["monotonic_s"] == events[2]["metadata"]["monotonic_s"]
+    assert [event["metadata"]["frames"] for event in events] == [1, 3, 3]
+    assert [event["metadata"]["samples"] for event in events[1:]] == [12, 12]
+    assert events[0]["metadata"]["worker"] == threading.current_thread().name
+    assert all(event["metadata"]["worker"].startswith("decode") for event in events[1:])
     assert {event["stage"] for event in events} == {"vocoder"}
     assert {event["run_id"] for event in events} == {"buffered"}
+
+
+def test_buffer_checks_activity_before_consuming_snapshots(tmp_path: Path) -> None:
+    recorder = get_recorder()
+    buffer = RequestEventBuffer()
+    visited: list[str] = []
+
+    def snapshots(request_id: str) -> Iterator[RequestEventSnapshot]:
+        visited.append(request_id)
+        yield RequestEventSnapshot(request_id=request_id, metadata={"frames": 1})
+
+    buffer.capture("decode_enqueued", snapshots("inactive-capture"), {})
+    buffer.emit("decode_dispatched", snapshots("inactive-emit"), {}, stage="vocoder")
+    assert visited == []
+
+    path = recorder.start(run_id="buffered", event_dir=str(tmp_path), stage="thinker")
+    buffer.capture("decode_enqueued", snapshots("active"), {})
+    assert visited == ["active"]
+    assert read_events(path) == []
+    buffer.flush(stage="vocoder")
+    recorder.stop()
+
+    buffer.capture("decode_enqueued", snapshots("stopped"), {})
+    assert visited == ["active"]
+    events = read_events(path)
+    assert [event["request_id"] for event in events] == ["active"]
 
 
 def test_multi_stage_same_process_share_one_file(tmp_path: Path) -> None:

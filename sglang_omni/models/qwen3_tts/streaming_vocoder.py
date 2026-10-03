@@ -8,7 +8,7 @@ import logging
 import queue
 import threading
 import time
-from collections.abc import Sequence
+from collections.abc import Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from itertools import count
 from typing import Any, Mapping
@@ -26,8 +26,8 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.profiler.event_recorder import (
     RequestEventBuffer,
+    RequestEventSnapshot,
     get_active_stage,
-    get_recorder,
 )
 from sglang_omni.proto import StagePayload
 from sglang_omni.scheduling.message import IncomingMessage, OutgoingMessage
@@ -122,6 +122,21 @@ class Qwen3TTSStreamState:
     codec_slot: int | None = None
     codec_frame_position: int = 0
     suppress_bootstrap: bool = False
+
+
+def decode_event_snapshots(
+    streams: Iterable[tuple[str, Qwen3TTSStreamState]],
+) -> Iterator[RequestEventSnapshot]:
+    for request_id, state in streams:
+        yield RequestEventSnapshot(
+            request_id=request_id,
+            metadata={
+                "decoded_chunks": state.decoded_chunks,
+                "generated_frames": state.total_frames - state.ref_frames,
+                "emitted_generated_frames": state.emitted_generated_frames,
+                "playback_deadline_s": state.playback_deadline_s,
+            },
+        )
 
 
 @dataclass(eq=False)
@@ -2275,8 +2290,10 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         state.initial_pending = True
-        self.capture_decode_event(
-            "qwen3_tts_vocoder_decode_enqueued", [(request_id, state)], {}
+        self.decode_events.capture(
+            "qwen3_tts_vocoder_decode_enqueued",
+            decode_event_snapshots(((request_id, state),)),
+            {},
         )
         self.initial_queue.put((request_id, state))
 
@@ -2293,51 +2310,14 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.enqueue_followup(request_id, state)
 
     def enqueue_followup(self, request_id: str, state: Qwen3TTSStreamState) -> None:
-        self.capture_decode_event(
-            "qwen3_tts_vocoder_decode_enqueued", [(request_id, state)], {}
+        self.decode_events.capture(
+            "qwen3_tts_vocoder_decode_enqueued",
+            decode_event_snapshots(((request_id, state),)),
+            {},
         )
         self.followup_queue.put(
             (state.playback_deadline_s, next(self.followup_sequence), request_id, state)
         )
-
-    def capture_decode_event(
-        self,
-        event_name: str,
-        streams: Sequence[tuple[str, Qwen3TTSStreamState]],
-        metadata: dict[str, int | str],
-    ) -> None:
-        """Buffer one decode event per stream; cheap enough to call under state_lock."""
-        if get_recorder().is_active():
-            timestamp_ns = time.time_ns()
-            monotonic_s = time.monotonic()
-            worker = threading.current_thread().name
-            for request_id, state in streams:
-                self.decode_events.capture(
-                    request_id=request_id,
-                    event_name=event_name,
-                    metadata={
-                        **metadata,
-                        "worker": worker,
-                        "decoded_chunks": state.decoded_chunks,
-                        "generated_frames": state.total_frames - state.ref_frames,
-                        "emitted_generated_frames": state.emitted_generated_frames,
-                        "playback_deadline_s": state.playback_deadline_s,
-                        "monotonic_s": monotonic_s,
-                    },
-                    timestamp_ns=timestamp_ns,
-                )
-        else:
-            pass
-
-    def emit_decode_event(
-        self,
-        event_name: str,
-        streams: Sequence[tuple[str, Qwen3TTSStreamState]],
-        metadata: dict[str, int | str],
-    ) -> None:
-        """Capture and write at once, for callers that do not hold state_lock."""
-        self.capture_decode_event(event_name, streams, metadata)
-        self.decode_events.flush(stage=self.event_stage_name)
 
     def collect_async_batch(
         self,
@@ -2441,8 +2421,11 @@ class Qwen3TTSStreamingVocoderScheduler(
             self.run_initial_batch(batch)
 
     def run_initial_batch(self, batch: list[tuple[str, Qwen3TTSStreamState]]) -> None:
-        self.emit_decode_event(
-            "qwen3_tts_vocoder_decode_dispatched", batch, {"collected": len(batch)}
+        self.decode_events.emit(
+            "qwen3_tts_vocoder_decode_dispatched",
+            decode_event_snapshots(batch),
+            {"collected": len(batch)},
+            stage=self.event_stage_name,
         )
         planned: list[tuple[str, Qwen3TTSStreamState, Qwen3TTSDecodePlan]] = []
         planned_incremental: list[
@@ -2511,14 +2494,23 @@ class Qwen3TTSStreamingVocoderScheduler(
                 handle = self.launch_decode_plans(
                     [entry[2] for entry in group], stream=stream
                 )
-                streams = [(request_id, state) for request_id, state, _ in group]
-                self.emit_decode_event(
+                self.decode_events.emit(
                     "qwen3_tts_vocoder_decode_launched",
-                    streams,
+                    decode_event_snapshots(
+                        (request_id, state) for request_id, state, _ in group
+                    ),
                     {"path": "left_context", "cohort_size": len(group)},
+                    stage=self.event_stage_name,
                 )
                 deltas = handle.resolve()
-                self.emit_decode_event("qwen3_tts_vocoder_decode_resolved", streams, {})
+                self.decode_events.emit(
+                    "qwen3_tts_vocoder_decode_resolved",
+                    decode_event_snapshots(
+                        (request_id, state) for request_id, state, _ in group
+                    ),
+                    {},
+                    stage=self.event_stage_name,
+                )
             except Qwen3TTSInvalidCodeRows as exc:
                 bad = set(exc.indices)
                 for index, (request_id, state, _) in enumerate(group):
@@ -2630,14 +2622,17 @@ class Qwen3TTSStreamingVocoderScheduler(
                 self.finish_codec_slots(slots)
                 self.maybe_log_codec_stats()
                 return None
-            self.emit_decode_event(
+            self.decode_events.emit(
                 "qwen3_tts_vocoder_decode_launched",
-                [(request_id, state) for request_id, state, _ in group],
+                decode_event_snapshots(
+                    (request_id, state) for request_id, state, _ in group
+                ),
                 {
                     "path": "incremental",
                     "cohort_size": len(group),
                     "fresh_frames": group[0][2].fresh_frames,
                 },
+                stage=self.event_stage_name,
             )
             return PendingIncrementalGroup(
                 group=group, handle=handle, claimed_slots=slots
@@ -2662,10 +2657,13 @@ class Qwen3TTSStreamingVocoderScheduler(
                 for request_id, state, _ in group:
                     self.fallback_incremental_stream(request_id, state, exc)
                 return None
-            self.emit_decode_event(
+            self.decode_events.emit(
                 "qwen3_tts_vocoder_decode_resolved",
-                [(request_id, state) for request_id, state, _ in group],
+                decode_event_snapshots(
+                    (request_id, state) for request_id, state, _ in group
+                ),
                 {},
+                stage=self.event_stage_name,
             )
             if not bad_indices:
                 return (group, deltas)
@@ -2763,9 +2761,9 @@ class Qwen3TTSStreamingVocoderScheduler(
                 state.initial_pending = False
                 if not self.is_aborted(request_id):
                     self.mark_stream_emitted(request_id)
-                    self.capture_decode_event(
+                    self.decode_events.capture(
                         "qwen3_tts_vocoder_decode_committed",
-                        [(request_id, state)],
+                        decode_event_snapshots(((request_id, state),)),
                         {"samples": int(delta.numel())},
                     )
                     self.outbox.put(self.stream_chunk_message(request_id, delta))
@@ -2868,8 +2866,11 @@ class Qwen3TTSStreamingVocoderScheduler(
         return batch
 
     def run_followup_batch(self, batch: list[tuple[str, Qwen3TTSStreamState]]) -> None:
-        self.emit_decode_event(
-            "qwen3_tts_vocoder_decode_dispatched", batch, {"collected": len(batch)}
+        self.decode_events.emit(
+            "qwen3_tts_vocoder_decode_dispatched",
+            decode_event_snapshots(batch),
+            {"collected": len(batch)},
+            stage=self.event_stage_name,
         )
         planned: list[tuple[str, Qwen3TTSStreamState, Qwen3TTSDecodePlan]] = []
         planned_incremental: list[
@@ -2972,9 +2973,9 @@ class Qwen3TTSStreamingVocoderScheduler(
             else:
                 if not self.is_aborted(request_id):
                     self.mark_stream_emitted(request_id)
-                    self.capture_decode_event(
+                    self.decode_events.capture(
                         "qwen3_tts_vocoder_decode_committed",
-                        [(request_id, state)],
+                        decode_event_snapshots(((request_id, state),)),
                         {"samples": int(delta.numel())},
                     )
                     self.outbox.put(self.stream_chunk_message(request_id, delta))

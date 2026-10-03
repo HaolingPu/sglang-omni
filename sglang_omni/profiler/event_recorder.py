@@ -15,6 +15,7 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
@@ -77,6 +78,12 @@ class RequestEvent:
 
 
 @dataclass(frozen=True, kw_only=True)
+class RequestEventSnapshot:
+    request_id: str
+    metadata: dict[str, int | float | str]
+
+
+@dataclass(frozen=True, kw_only=True)
 class PendingRequestEvent:
     request_id: str
     event_name: str
@@ -92,20 +99,44 @@ class RequestEventBuffer(threading.local):
 
     def capture(
         self,
-        *,
-        request_id: str,
         event_name: str,
+        snapshots: Iterable[RequestEventSnapshot],
         metadata: dict[str, int | float | str],
-        timestamp_ns: int,
     ) -> None:
-        self.records.append(
-            PendingRequestEvent(
-                request_id=request_id,
-                event_name=event_name,
-                metadata=metadata.copy(),
-                timestamp_ns=timestamp_ns,
+        """Consume snapshots now; all requests in this cohort share capture clocks."""
+        if not get_recorder().is_active():
+            return
+        else:
+            pass
+        timestamp_ns = time.time_ns()
+        monotonic_s = time.monotonic()
+        worker = threading.current_thread().name
+        for snapshot in snapshots:
+            self.records.append(
+                PendingRequestEvent(
+                    request_id=snapshot.request_id,
+                    event_name=event_name,
+                    metadata={
+                        **metadata,
+                        **snapshot.metadata,
+                        "worker": worker,
+                        "monotonic_s": monotonic_s,
+                    },
+                    timestamp_ns=timestamp_ns,
+                )
             )
-        )
+
+    def emit(
+        self,
+        event_name: str,
+        snapshots: Iterable[RequestEventSnapshot],
+        metadata: dict[str, int | float | str],
+        *,
+        stage: str | None,
+    ) -> None:
+        """Capture and flush on callers outside serving locks."""
+        self.capture(event_name, snapshots, metadata)
+        self.flush(stage=stage)
 
     def flush(self, *, stage: str | None) -> None:
         for record in self.records:
