@@ -19,6 +19,7 @@ from sglang_omni.models.moss_tts_local.config import (
     MossTTSLocalPipelineConfig,
     MossTTSLocalSplitPipelineConfig,
 )
+from sglang_omni.models.moss_tts_local.engine_builder import MossTtsLocalEngineBuilder
 from sglang_omni.models.moss_tts_local.local_transformer import (
     MossTTSLocalTransformer,
     rotate_half_interleaved,
@@ -595,7 +596,7 @@ def install_fake_moss_ar_factory(
         server_args = types.SimpleNamespace(
             model_path=model_path,
             context_length=context_length,
-            **kwargs,
+            **{"enable_torch_compile": False, **kwargs},
         )
         server_args.cuda_graph_config = types.SimpleNamespace(
             decode=types.SimpleNamespace(
@@ -733,6 +734,17 @@ def test_moss_local_engine_uses_text_backbone_context(
         builder.generation_defaults(dtype="bfloat16")["max_prefill_tokens"]
         == expected_max_prefill_tokens
     )
+
+
+def test_moss_tts_local_generation_defaults_defer_torch_compile_to_builder() -> None:
+    builder = MossTtsLocalEngineBuilder(
+        enable_async_decode=True,
+        async_decode_min_batch_size=1,
+        total_gpu_memory_fraction=0.5,
+        codec_mem_reserve=0.0,
+    )
+
+    assert "enable_torch_compile" not in builder.generation_defaults(dtype="bfloat16")
 
 
 def test_moss_local_context_probe_uses_runtime_model_config_inputs(
@@ -1517,7 +1529,7 @@ def test_batched_reference_encoder_mixes_path_and_waveform_jobs():
     assert calls[0] == [2, 5]
 
 
-# _MossLocalReferenceEncoder
+# MossLocalReferenceEncoder
 
 
 def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
@@ -1586,7 +1598,7 @@ def test_cached_reference_encoder_on_off_hit_bit_identical(tmp_path):
     )
     assert encode_count == 1
 
-    # ON-miss: first call to _MossLocalReferenceEncoder (cache empty)
+    # ON-miss: first call to MossLocalReferenceEncoder (cache empty)
     cached_enc = MossLocalReferenceEncoder(
         fake_batched, n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
@@ -1664,8 +1676,8 @@ def test_cached_reference_encoder_duration_gate(tmp_path, monkeypatch):
         FakeBatched(), n_vq=N_VQ, max_items=256, max_bytes=64 << 20
     )
 
-    # _BatchedReferenceEncoder.encode checks duration before enqueuing;
-    # _MossLocalReferenceEncoder calls through so the duration check still fires.
+    # BatchedReferenceEncoder.encode checks duration before enqueuing;
+    # MossLocalReferenceEncoder calls through so the duration check still fires.
     with pytest.raises(ValueError, match="100"):
         enc.encode(str(ref))
 
