@@ -576,7 +576,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         followup_max_batch_size: int = 8,
         followup_batch_wait_ms: int = 1,
         followup_worker_count: int = 2,
-        followup_urgent_slack_ms: int = 0,
         initial_cuda_graph: bool = True,
         enable_deterministic_inference: bool = False,
         followup_cuda_graph: bool = True,
@@ -684,10 +683,6 @@ class Qwen3TTSStreamingVocoderScheduler(
             pass
         if initial_batch_wait_ms < 0 or followup_batch_wait_ms < 0:
             raise ValueError("async batch waits must be >= 0")
-        else:
-            pass
-        if followup_urgent_slack_ms < 0:
-            raise ValueError("followup_urgent_slack_ms must be >= 0")
         else:
             pass
         if codec_state_slots <= 0:
@@ -819,11 +814,6 @@ class Qwen3TTSStreamingVocoderScheduler(
         self.initial_batch_wait_s = float(initial_batch_wait_ms) / 1000.0
         self.followup_max_batch_size = int(followup_max_batch_size)
         self.followup_batch_wait_s = float(followup_batch_wait_ms) / 1000.0
-        # note (Haoling Pu): deterministic runs keep the scheduling they qualified on.
-        if self.deterministic_inference:
-            self.followup_urgent_slack_s = 0.0
-        else:
-            self.followup_urgent_slack_s = float(followup_urgent_slack_ms) / 1000.0
         self.default_initial_chunk_frames = int(initial_chunk_frames)
         self.stream_left_context_frames = int(stream_left_context_frames)
         self.async_decode = (
@@ -2917,10 +2907,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         while True:
-            if self.followup_urgent_slack_s > 0.0:
-                self.commit_decoded_incremental()
-            else:
-                pass
+            self.commit_decoded_incremental()
             in_flight = bool(getattr(self.worker_ctx, "pending_incremental", None))
             if in_flight:
                 if not self.followup_collect_lock.acquire(
@@ -2954,9 +2941,7 @@ class Qwen3TTSStreamingVocoderScheduler(
         self, *, first_timeout: float | None = None
     ) -> list[tuple[str, Qwen3TTSStreamState]] | None:
         try:
-            earliest_playback_deadline_s, _, request_id, state = (
-                self.followup_queue.get(timeout=first_timeout)
-            )
+            _, _, request_id, state = self.followup_queue.get(timeout=first_timeout)
         except queue.Empty:
             return None
         if state is None or self.async_stop.is_set():
@@ -2964,37 +2949,21 @@ class Qwen3TTSStreamingVocoderScheduler(
         else:
             pass
         batch = [(request_id, state)]
-        window_end_s = time.monotonic() + self.followup_batch_wait_s
+        deadline = time.monotonic() + self.followup_batch_wait_s
         while len(batch) < self.followup_max_batch_size:
-            now_s = time.monotonic()
-            if self.followup_urgent_slack_s > 0.0:
-                urgent_from_s = (
-                    earliest_playback_deadline_s - self.followup_urgent_slack_s
-                )
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             else:
-                urgent_from_s = float("inf")
-            wake_s = min(window_end_s, urgent_from_s)
+                pass
             try:
-                # note (Haoling Pu): urgent batches still take queued work to stay full.
-                if urgent_from_s <= now_s:
-                    playback_deadline_s, _, request_id, state = (
-                        self.followup_queue.get_nowait()
-                    )
-                elif wake_s > now_s:
-                    playback_deadline_s, _, request_id, state = self.followup_queue.get(
-                        timeout=wake_s - now_s
-                    )
-                else:
-                    break
+                _, _, request_id, state = self.followup_queue.get(timeout=remaining)
             except queue.Empty:
                 break
             if state is None:
                 return None
             else:
                 pass
-            earliest_playback_deadline_s = min(
-                earliest_playback_deadline_s, playback_deadline_s
-            )
             batch.append((request_id, state))
         return batch
 
@@ -3038,26 +3007,19 @@ class Qwen3TTSStreamingVocoderScheduler(
                 else:
                     planned.append((request_id, state, plan))
         stream = getattr(self.worker_ctx, "stream", self.followup_decode_stream)
-        cohorts = self.group_decode_plans(planned_incremental)
-        if self.followup_urgent_slack_s > 0.0:
-            # note (Haoling Pu): streams run in launch order; earliest deadline first.
-            cohorts = sorted(
-                (
-                    sorted(cohort, key=lambda entry: entry[1].playback_deadline_s)
-                    for cohort in cohorts
-                ),
-                key=lambda cohort: cohort[0][1].playback_deadline_s,
-            )
-        else:
-            pass
+        # note (Haoling Pu): earliest cohort first, its earliest rows in the first group.
+        cohorts = sorted(
+            (
+                sorted(cohort, key=lambda entry: entry[1].playback_deadline_s)
+                for cohort in self.group_decode_plans(planned_incremental)
+            ),
+            key=lambda cohort: cohort[0][1].playback_deadline_s,
+        )
         for cohort in cohorts:
             for group in self.split_incremental_group_for_graph(
                 cohort, runner=getattr(self.worker_ctx, "incremental_graphs", None)
             ):
-                if self.followup_urgent_slack_s > 0.0:
-                    self.commit_decoded_incremental()
-                else:
-                    pass
+                self.commit_decoded_incremental()
                 self.drain_pending_incremental(keep=1)
                 pending = self.launch_incremental_group(group, stream=stream)
                 if pending is not None:
@@ -3091,24 +3053,30 @@ class Qwen3TTSStreamingVocoderScheduler(
         return pending
 
     def commit_decoded_incremental(self) -> None:
-        """Commit the oldest in-flight cohorts whose decode already finished."""
+        """Commit the oldest in-flight cohorts that are ready to resolve."""
         pending = self.pending_incremental()
-        decoded_count = 0
-        for in_flight in pending:
-            slot = in_flight.handle.slot
+        ready_count = 0
+        for in_flight_group in pending:
+            slot = in_flight_group.handle.slot
             if slot is None:
-                is_decoded = True
+                is_ready = True
             else:
                 try:
-                    is_decoded = slot.output_transfer.query()
-                except Exception:
-                    # note (Haoling Pu): the drain's resolve handles a failed event.
-                    is_decoded = True
-            if is_decoded:
-                decoded_count += 1
+                    is_ready = slot.output_transfer.query()
+                except RuntimeError:
+                    logger.warning(
+                        "Qwen3-TTS follow-up decode event query failed; resolving the cohort now",
+                        exc_info=True,
+                    )
+                    is_ready = True
+            if is_ready:
+                ready_count += 1
             else:
                 break
-        self.drain_pending_incremental(keep=len(pending) - decoded_count)
+        if ready_count > 0:
+            self.drain_pending_incremental(keep=len(pending) - ready_count)
+        else:
+            pass
 
     def drain_pending_incremental(self, *, keep: int) -> None:
         """Resolve and commit the oldest in-flight cohorts down to ``keep``."""

@@ -489,15 +489,12 @@ Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
 in on Intel GPUs, follow the
 [Qwen3-TTS XPU recipe](../get_started/installation_xpu.md#qwen3-tts-text-to-speech-single-xpu).
 
-With `followup_urgent_slack_ms` above 0 (default 30), every follow-up batch
-launches its cohorts in playback-deadline order. When a batch's earliest
-playback deadline is within that many milliseconds, the batch stops waiting for
-new arrivals but still takes what is already queued. The follow-up workers also
-commit each in-flight cohort as soon as its decode has finished, checked at the
-top of the worker loop and before each launch, instead of at the next drain.
-Launch with `--vocoder.factory.followup_urgent_slack_ms 0` to restore the plain
-collection window, queue-order launches and drain-time commits;
-`enable_deterministic_inference: true` always keeps them.
+Each follow-up batch sorts the stateful decoder's cohorts, and the rows within
+each, by playback deadline: the nearest cohort launches first and its nearest
+rows fill the first graph-sized group. Left-context decodes keep queue order.
+The follow-up workers also commit each in-flight cohort as soon as its decode
+has finished, checked at the top of the worker loop and before each launch,
+instead of at the next drain.
 
 #### First-audio chunk ramp
 
