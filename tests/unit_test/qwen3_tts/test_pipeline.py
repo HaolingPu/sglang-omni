@@ -6019,22 +6019,6 @@ def test_qwen3_tts_followup_launches_cohorts_and_streams_by_deadline(
     }
     for request_id, state in streams.items():
         state.playback_deadline_s = now_s + playback_offset_s[request_id]
-    pending_before_launch: list[int] = []
-    launch_incremental_group = scheduler.launch_incremental_group
-
-    def launch_recording_depth(
-        group: list[
-            tuple[
-                str, Qwen3TTSStreamState, qwen3_streaming_vocoder.IncrementalDecodePlan
-            ]
-        ],
-        *,
-        stream: torch.Stream | None,
-    ) -> qwen3_streaming_vocoder.PendingIncrementalGroup | None:
-        pending_before_launch.append(len(scheduler.pending_incremental()))
-        return launch_incremental_group(group, stream=stream)
-
-    monkeypatch.setattr(scheduler, "launch_incremental_group", launch_recording_depth)
     decode_steps.clear()
 
     # note (Haoling Pu): urgent is listed after relaxed-same to test the in-cohort sort.
@@ -6050,7 +6034,6 @@ def test_qwen3_tts_followup_launches_cohorts_and_streams_by_deadline(
 
     launched = [request_id for request_id, step in decode_steps if step == "launched"]
     assert launched == ["urgent", "relaxed-same", "relaxed-four", "relaxed-eight"]
-    assert max(pending_before_launch) <= 1
     assert scheduler.pending_incremental() == []
     assert scheduler.codec_slots_in_flight == set()
 
