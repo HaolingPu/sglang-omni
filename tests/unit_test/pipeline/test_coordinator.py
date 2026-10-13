@@ -1296,6 +1296,15 @@ def audio_chunk(request_id: str, payload_bytes: int) -> StreamMessage:
     )
 
 
+def audio_completion(request_id: str, payload_bytes: int) -> CompleteMessage:
+    return CompleteMessage(
+        request_id,
+        "decode",
+        True,
+        result={"audio_waveform": bytes(payload_bytes), "sample_rate": 24000},
+    )
+
+
 def backlog_coordinator(
     *,
     max_total_backlog_bytes: int | None = None,
@@ -1560,5 +1569,79 @@ def test_backlog_failure_after_one_of_two_terminals_cleans_partial_results() -> 
             await anext(stream)
         assert coordinator.stream_queues == {}
         assert coordinator.completion_futures == {}
+
+    asyncio.run(run())
+
+
+def test_total_backlog_cap_counts_a_terminal_waveform_the_reader_never_takes() -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(max_total_backlog_bytes=10)
+        stalled_stream = await open_stream_and_take_one(coordinator, "req-stalled", 4)
+        await coordinator.handle_completion(audio_completion("req-stalled", 8))
+        coordinator.stream_backlogs["req-stalled"].reader_idle_since_s -= 100.0
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 8
+        assert delivery["generation_finished_stream_count"] == 1
+
+        reading_stream, reading_first_message = await open_stream(
+            coordinator, "req-reading"
+        )
+        await coordinator.handle_stream(audio_chunk("req-reading", 4))
+
+        assert (await reading_first_message).chunk["audio_waveform"] == bytes(4)
+        assert control_plane.aborts == []
+        assert "req-stalled" not in coordinator.completion_futures
+        delivery = coordinator.health()["stream_delivery"]
+        assert delivery["stream_backlog_bytes"] == 0
+        assert delivery["failed_stream_count"] == 1
+        with pytest.raises(QueueFullError):
+            await anext(stalled_stream)
+        await reading_stream.aclose()
+        assert coordinator.stream_backlogs == {}
+
+    asyncio.run(run())
+
+
+def test_reading_the_terminal_waveform_releases_its_backlog() -> None:
+    async def run() -> None:
+        coordinator, _ = backlog_coordinator(max_total_backlog_bytes=100)
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        await coordinator.handle_completion(audio_completion("req-1", 8))
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 8
+
+        terminal_message = await anext(stream)
+
+        assert terminal_message.result["audio_waveform"] == bytes(8)
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+        with pytest.raises(StopAsyncIteration):
+            await anext(stream)
+        assert coordinator.stream_backlogs == {}
+
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("terminal_stages", [["decode"], ["thinker", "decode"]])
+def test_last_terminal_waveform_over_the_cap_fails_its_own_stream(
+    terminal_stages: list[str],
+) -> None:
+    async def run() -> None:
+        coordinator, control_plane = backlog_coordinator(
+            max_total_backlog_bytes=10, terminal_stages=terminal_stages
+        )
+        stream = await open_stream_and_take_one(coordinator, "req-1", 4)
+        for text_stage in terminal_stages[:-1]:
+            await coordinator.handle_completion(
+                CompleteMessage("req-1", text_stage, True, result={"text": "hi"})
+            )
+
+        await coordinator.handle_completion(audio_completion("req-1", 12))
+
+        assert control_plane.aborts == []
+        assert "req-1" not in coordinator.requests
+        assert "req-1" not in coordinator.partial_results
+        assert coordinator.health()["stream_delivery"]["stream_backlog_bytes"] == 0
+        with pytest.raises(QueueFullError):
+            await anext(stream)
+        assert coordinator.stream_queues == {}
 
     asyncio.run(run())

@@ -59,17 +59,21 @@ class CoordinatorHealth(TypedDict):
     stream_delivery: StreamDeliveryHealth
 
 
-def stream_chunk_payload_bytes(chunk: object) -> int:
-    """Binary payload bytes in a decoded stream chunk, such as an audio waveform."""
-    if isinstance(chunk, dict):
-        return sum(len(value) for value in chunk.values() if isinstance(value, bytes))
+def stream_message_payload_bytes(msg: CompleteMessage | StreamMessage) -> int:
+    """Binary payload bytes a stream reader gets with msg, such as an audio waveform."""
+    if isinstance(msg, CompleteMessage):
+        payload = msg.result
+    else:
+        payload = msg.chunk
+    if isinstance(payload, dict):
+        return sum(len(value) for value in payload.values() if isinstance(value, bytes))
     else:
         return 0
 
 
 @dataclass(kw_only=True)
 class StreamBacklog:
-    """Chunk bytes queued for one stream reader that it has not taken yet."""
+    """Payload bytes queued for one stream reader that it has not taken yet."""
 
     undelivered_bytes: int
     # note (Haoling Pu): time of the last read, or when the backlog became non-empty.
@@ -439,12 +443,17 @@ class Coordinator(CoordinatorSessions):
             completed_stages: set[str] = set()
             while True:
                 msg = await queue.get()
+                if isinstance(msg, CompleteMessage) and not msg.success:
+                    raise QueueFullError.from_message(msg.error)
+                else:
+                    pass
+                backlog = self.stream_backlogs[request_id]
+                payload_bytes = stream_message_payload_bytes(msg)
+                backlog.undelivered_bytes -= payload_bytes
+                backlog.reader_idle_since_s = time.monotonic()
+                self.stream_backlog_bytes -= payload_bytes
+                yield msg
                 if isinstance(msg, CompleteMessage):
-                    if not msg.success:
-                        raise QueueFullError.from_message(msg.error)
-                    else:
-                        pass
-                    yield msg
                     completed_stages.add(
                         self.replica_topology.logical_name(msg.from_stage)
                     )
@@ -456,12 +465,7 @@ class Coordinator(CoordinatorSessions):
                     else:
                         pass
                 else:
-                    backlog = self.stream_backlogs[request_id]
-                    payload_bytes = stream_chunk_payload_bytes(msg.chunk)
-                    backlog.undelivered_bytes -= payload_bytes
-                    backlog.reader_idle_since_s = time.monotonic()
-                    self.stream_backlog_bytes -= payload_bytes
-                    yield msg
+                    pass
         finally:
             if self.stream_queues.get(request_id) is queue:
                 try:
@@ -901,11 +905,11 @@ class Coordinator(CoordinatorSessions):
                     pass
             else:
                 pass
+            self.requests.pop(request_id, None)
             if request_id in self.stream_queues:
-                await self.stream_queues[request_id].put(msg)
+                await self.queue_stream_message(request_id, msg)
             else:
                 pass
-            self.requests.pop(request_id, None)
             return
         else:
             pass
@@ -914,32 +918,29 @@ class Coordinator(CoordinatorSessions):
         partials = self.partial_results.setdefault(request_id, {})
         partials[from_stage] = msg.result
 
-        # Forward stream completion per-stage
-        if request_id in self.stream_queues:
-            await self.stream_queues[request_id].put(msg)
-        else:
-            pass
-
-        if set(partials) < expected_terminal_stages:
-            return  # still waiting
-        else:
-            pass
-
-        # All terminal stages done -> merge and resolve
-        merged = dict(partials)
-        self.partial_results.pop(request_id)
-        info.state = RequestState.COMPLETED
-        info.result = merged
-
-        if request_id in self.completion_futures:
-            future = self.completion_futures[request_id]
-            if not future.done():
-                future.set_result(merged)
+        if set(partials) >= expected_terminal_stages:
+            # All terminal stages done -> merge and resolve
+            merged = dict(partials)
+            self.partial_results.pop(request_id)
+            info.state = RequestState.COMPLETED
+            info.result = merged
+            if request_id in self.completion_futures:
+                future = self.completion_futures[request_id]
+                if not future.done():
+                    future.set_result(merged)
+                else:
+                    pass
             else:
                 pass
+            self.requests.pop(request_id, None)
         else:
             pass
-        self.requests.pop(request_id, None)
+
+        # note (Haoling Pu): queued last; it can trip the cap and fail this request.
+        if request_id in self.stream_queues:
+            await self.queue_stream_message(request_id, msg)
+        else:
+            pass
 
     async def handle_stream(self, msg: StreamMessage) -> None:
         """Handle a stream chunk from a stage."""
@@ -950,8 +951,7 @@ class Coordinator(CoordinatorSessions):
             return
         else:
             pass
-        backlog = self.stream_backlogs.get(request_id)
-        if backlog is None:
+        if request_id not in self.stream_backlogs:
             return
         else:
             pass
@@ -988,7 +988,17 @@ class Coordinator(CoordinatorSessions):
             msg = replace(msg, from_stage=logical, stage_name=stage_name)
         else:
             pass
-        payload_bytes = stream_chunk_payload_bytes(msg.chunk)
+        await self.queue_stream_message(request_id, msg)
+
+    async def queue_stream_message(
+        self, request_id: str, msg: CompleteMessage | StreamMessage
+    ) -> None:
+        """Queue msg for its stream reader and enforce max_total_backlog_bytes.
+
+        Over the cap, the streams whose readers have been idle longest fail first.
+        """
+        backlog = self.stream_backlogs[request_id]
+        payload_bytes = stream_message_payload_bytes(msg)
         if backlog.undelivered_bytes == 0:
             backlog.reader_idle_since_s = time.monotonic()
         else:
@@ -1017,6 +1027,8 @@ class Coordinator(CoordinatorSessions):
             )
             failed_backlog = self.stream_backlogs.pop(failed_request_id)
             self.stream_backlog_bytes -= failed_backlog.undelivered_bytes
+            # note (Haoling Pu): no reader awaits this future; it holds the result.
+            self.completion_futures.pop(failed_request_id)
             self.failed_stream_count += 1
             failed_queue = self.stream_queues[failed_request_id]
             while not failed_queue.empty():
