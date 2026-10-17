@@ -5,7 +5,7 @@ from unittest.mock import Mock
 
 import pytest
 
-from sglang_omni.config.schema import EngineArgs, ProcessConfig
+from sglang_omni.config.schema import EngineArgs, FactoryArgs, ProcessConfig
 from sglang_omni.models.qwen3_tts.config import Qwen3TTSPipelineConfig
 from sglang_omni.serve.speech_service import SpeechRequestValidator
 from sglang_omni.utils.imports import import_string
@@ -172,27 +172,67 @@ def test_speech_route_accepts_the_warmup_stream_of_each_checkpoint(
 
 
 @pytest.mark.parametrize(
-    ("engine_args", "vocoder_process", "processes", "running_stream_count"),
+    (
+        "engine_args",
+        "factory_overrides",
+        "vocoder_process",
+        "processes",
+        "running_stream_count",
+    ),
     [
-        (EngineArgs(), "pipeline", {}, 64),
-        (EngineArgs(max_running_requests=96), "pipeline", {}, 96),
-        (EngineArgs(), "pipeline", {"pipeline": ProcessConfig(num_replicas=2)}, 64),
-        (EngineArgs(), "vocoder", {"pipeline": ProcessConfig(num_replicas=2)}, 128),
-        (EngineArgs(), "vocoder", {"vocoder": ProcessConfig(num_replicas=3)}, 22),
+        (EngineArgs(), {}, "pipeline", {}, 64),
+        (EngineArgs(max_running_requests=96), {}, "pipeline", {}, 96),
+        (EngineArgs(), {"max_running_requests": 96}, "pipeline", {}, 96),
+        (
+            EngineArgs(max_running_requests=80),
+            {"max_running_requests": 96},
+            "pipeline",
+            {},
+            80,
+        ),
+        (
+            EngineArgs(),
+            {},
+            "pipeline",
+            {"pipeline": ProcessConfig(num_replicas=2)},
+            64,
+        ),
+        (
+            EngineArgs(),
+            {},
+            "vocoder",
+            {"pipeline": ProcessConfig(num_replicas=2)},
+            128,
+        ),
+        (
+            EngineArgs(),
+            {},
+            "vocoder",
+            {"vocoder": ProcessConfig(num_replicas=3)},
+            64,
+        ),
     ],
     ids=[
         "default",
         "engine_override",
+        "factory_override",
+        "engine_over_factory",
         "two_pipeline_replicas",
         "two_engine_replicas",
         "three_vocoder_replicas",
     ],
 )
-def test_vocoder_receives_the_streams_the_engine_runs_per_replica(
-    engine_args, vocoder_process, processes, running_stream_count
+def test_vocoder_receives_the_streams_one_replica_may_hold(
+    engine_args, factory_overrides, vocoder_process, processes, running_stream_count
 ) -> None:
     config = Qwen3TTSPipelineConfig(model_path="org/model")
     config.stage_named("tts_engine").engine = engine_args
+    if factory_overrides:
+        config.stage_named("tts_engine").factory = FactoryArgs(
+            dtype="bfloat16", server_args_overrides=factory_overrides
+        )
+    else:
+        pass
     config.stage_named("vocoder").process = vocoder_process
     config.processes = processes
 

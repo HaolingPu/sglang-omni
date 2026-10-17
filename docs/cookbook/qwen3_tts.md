@@ -519,9 +519,11 @@ against 82 to 89 ms.
 Each stream holds one of `codec_state_slots` (default 64, matching the default
 `max_running_requests`) while it decodes; streams past the slots decode eagerly
 on the left-context path. At startup the vocoder logs the decode graphs it
-captured and warns when the slots are fewer than the requests the engine can run
-per vocoder replica, so raise `--vocoder.factory.codec_state_slots` together
-with `max_running_requests`.
+captured and warns when the slots are fewer than the streams it may have to hold
+at once: the engine's `max_running_requests` when the vocoder shares its
+process, and that times the engine replicas when the vocoder runs in its own
+process, since requests bind to its replicas round-robin. Raise
+`--vocoder.factory.codec_state_slots` together with `max_running_requests`.
 
 Intel XPU, Ascend NPU, CPU and Apple MPS decode synchronously by default. To opt
 in on Intel GPUs, follow the

@@ -119,24 +119,37 @@ class Qwen3TTSPipelineConfig(PipelineConfig):
             pass
         if stage_name == "vocoder":
             engine_stage = self.stage_named("tts_engine")
-            engine_args = engine_stage.engine
-            if engine_args is not None and engine_args.max_running_requests is not None:
-                running_request_count = engine_args.max_running_requests
+            # note (Haoling Pu): the overrides the engine factory receives, where
+            # engine.* and factory.server_args_overrides both land.
+            server_args_overrides = {
+                **resolve_stage_factory_kwargs(engine_stage, self).get(
+                    "server_args_overrides", {}
+                ),
+                **resolve_stage_typed_kwargs(engine_stage).get(
+                    "server_args_overrides", {}
+                ),
+            }
+            if "max_running_requests" in server_args_overrides:
+                running_request_count = int(
+                    server_args_overrides["max_running_requests"]
+                )
             else:
                 running_request_count = type(self).generation_admission_defaults()[
                     "max_running_requests"
                 ]
-            engine_replicas = self.processes.get(
-                stage_process_name(engine_stage), ProcessConfig()
-            ).num_replicas
-            vocoder_replicas = self.processes.get(
-                stage_process_name(self.stage_named(stage_name)), ProcessConfig()
-            ).num_replicas
-            # note (Haoling Pu): requests bind to vocoder replicas round-robin,
-            # so this is the average per replica, rounded up.
-            kwargs["running_stream_count"] = (
-                running_request_count * engine_replicas + vocoder_replicas - 1
-            ) // vocoder_replicas
+            engine_process = stage_process_name(engine_stage)
+            if stage_process_name(self.stage_named(stage_name)) == engine_process:
+                # note (Haoling Pu): each replica of a shared process decodes the
+                # streams its own engine runs.
+                kwargs["running_stream_count"] = running_request_count
+            else:
+                # note (Haoling Pu): requests bind to vocoder replicas round-robin
+                # with no per-replica cap, so one replica may hold every stream
+                # the engine replicas run together.
+                kwargs["running_stream_count"] = (
+                    running_request_count
+                    * self.processes.get(engine_process, ProcessConfig()).num_replicas
+                )
         else:
             pass
         # The vocoder captures its decode graphs during the asynchronous decode
