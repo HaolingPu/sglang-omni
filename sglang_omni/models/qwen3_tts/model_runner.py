@@ -15,7 +15,6 @@ from sglang_omni.model_runner.prefill_inputs import (
     attach_omni_prefill_inputs,
 )
 from sglang_omni.models.qwen3_omni.talker_model_runner import QwenTalkerModelRunner
-from sglang_omni.models.qwen3_tts.sglang_model import PredictorGraphStats
 from sglang_omni.scheduling.types import (
     RequestOutput,
     SchedulerOutput,
@@ -31,7 +30,10 @@ if TYPE_CHECKING:
     from sglang.srt.model_executor.runner.base_runner import BaseRunner
 
     from sglang_omni.models.qwen3_tts.request_builders import Qwen3TTSSGLangRequestData
-    from sglang_omni.models.qwen3_tts.sglang_model import Qwen3TTSTalker
+    from sglang_omni.models.qwen3_tts.sglang_model import (
+        PredictorGraphStats,
+        Qwen3TTSTalker,
+    )
     from sglang_omni.scheduling.sglang_backend.output_processor import (
         SGLangOutputProcessor,
     )
