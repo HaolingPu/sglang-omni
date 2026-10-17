@@ -39,6 +39,7 @@ from sglang_omni.models.qwen3_tts.incremental_codec_cuda_graph import (
     Qwen3TTSIncrementalCodecCudaGraphRunner,
     split_frames_by_width,
 )
+from sglang_omni.models.qwen3_tts.model_runner import Qwen3TTSModelRunner
 from sglang_omni.models.qwen3_tts.payload_types import Qwen3TTSState
 from sglang_omni.models.qwen3_tts.prompt_frontend import Qwen3TTSPromptFrontend
 from sglang_omni.models.qwen3_tts.request_builders import (
@@ -80,6 +81,7 @@ from sglang_omni.scheduling.speaker_cache import (
     get_speaker_artifact_cache,
 )
 from sglang_omni.scheduling.types import RequestOutput
+from sglang_omni.serve.openai_api import extract_model_info_stage_data
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
@@ -9621,6 +9623,39 @@ def test_qwen3_tts_vocoder_factory_checks_coverage_against_the_running_stream_co
         == 96
     )
     assert vocoder_factory_capture(monkeypatch)["running_stream_count"] is None
+
+
+def test_qwen3_tts_vocoder_codec_state_reaches_model_info(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scheduler, _ = stateful_qwen3_tts_scheduler(monkeypatch)
+
+    model_info = scheduler.admin("model_info", {})
+    pause = scheduler.admin("pause_generation", {"mode": "abort"})
+
+    stage_infos = extract_model_info_stage_data(
+        {
+            "success": True,
+            "results": [{"stage": "vocoder", "success": True, **model_info}],
+        }
+    )
+    assert stage_infos == [
+        {
+            "codec_state": scheduler.codec_state_stats(),
+            "stage": "vocoder",
+            "success": True,
+        }
+    ]
+    assert stage_infos[0]["codec_state"]["enabled"] is True
+    assert pause["data"] == {"skipped": True, "unsupported": True}
+
+
+def test_qwen3_tts_model_runner_reports_the_predictor_graphs() -> None:
+    predictor_stats = {"enabled": True, "replays": 5, "eager_runs": 1}
+    runner = object.__new__(Qwen3TTSModelRunner)
+    runner.model = SimpleNamespace(predictor_graph_stats=lambda: predictor_stats)
+
+    assert runner.model_info() == {"predictor_cuda_graph": predictor_stats}
 
 
 @pytest.mark.benchmark
