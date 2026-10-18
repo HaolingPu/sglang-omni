@@ -85,6 +85,7 @@ from sglang_omni.serve.openai_api import extract_model_info_stage_data
 from sglang_omni.serve.openai_errors import is_bad_request_error
 from sglang_omni.utils import cuda_staging
 from tests.unit_test.fakes import FakeExecutionBridge
+from tests.unit_test.pipeline.helpers import make_stage
 
 
 def placeholder_prompt_constants(
@@ -9888,23 +9889,29 @@ def test_qwen3_tts_preprocessing_logs_the_reference_encoder_coverage(
     assert [record.getMessage() for record in caplog.records] == messages
 
 
-def test_qwen3_tts_preprocessing_logs_coverage_before_serving(
+def test_qwen3_tts_preprocessing_stage_reports_ready_after_the_coverage_log(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    calls: list[str] = []
+    """The preprocessing stage reported ready before it logged the reference
+    encoder coverage."""
+    stats_threads: list[str] = []
+    monkeypatch.setattr(
+        qwen3_stages,
+        "qwen3_tts_reference_encoder_stats",
+        lambda: stats_threads.append(threading.current_thread().name),
+    )
     scheduler = qwen3_stages.create_preprocessing_executor("model")
-    monkeypatch.setattr(
-        scheduler, "log_reference_encoder_coverage", lambda: calls.append("log")
-    )
-    monkeypatch.setattr(
-        qwen3_stages.ThreadedSimpleScheduler,
-        "start",
-        lambda self: calls.append("serve"),
-    )
+    # note (Haoling Pu): with no serving loop, only work done before the stage
+    # reports ready can read the stats.
+    monkeypatch.setattr(scheduler, "start", lambda: None)
 
-    scheduler.start()
+    async def run() -> None:
+        stage_obj = make_stage(name="preprocessing", scheduler=scheduler)
+        await stage_obj.start()
+        assert stats_threads == ["scheduler-preprocessing"]
+        await stage_obj.stop()
 
-    assert calls == ["log", "serve"]
+    asyncio.run(run())
 
 
 def test_qwen3_tts_preprocessing_reference_encoders_reach_model_info(

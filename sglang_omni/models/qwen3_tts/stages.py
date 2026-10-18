@@ -256,11 +256,12 @@ class Qwen3TTSPreprocessingScheduler(
             "longer references and encoders without graphs run eagerly"
         )
 
-    def start(self) -> None:
+    def warm_up_serving_thread(self) -> None:
         # note (Haoling Pu): a process builds all of its stages before starting
-        # any, so encoders the engine stage loaded already exist here.
+        # any, so encoders the engine stage loaded already exist here, and the
+        # stage reports ready only after this returns.
+        super().warm_up_serving_thread()
         self.log_reference_encoder_coverage()
-        super().start()
 
 
 def create_preprocessing_executor(
