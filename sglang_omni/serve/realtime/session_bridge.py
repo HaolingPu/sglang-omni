@@ -205,7 +205,7 @@ class SessionBridge(InteractionAdapter):
         self.response_id: str | None = None
         self.response_item_id = ""
         self.response_turn: int | None = None
-        # The turn of every reply item, so a client truncate names the reply it cuts.
+        # note (Haoling Pu): a client truncate names an item, so each reply item keeps its turn.
         self.item_turns: dict[str, int | None] = {}
         self.response_text = ""
         self.has_audio = False
