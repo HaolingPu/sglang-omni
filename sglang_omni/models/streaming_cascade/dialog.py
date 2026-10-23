@@ -77,7 +77,7 @@ class Dialog(StreamComponent):
     reply stays in the history only up to the last sentence whose audio the
     graph delivered (`reply.delivered`), and a client `truncate` moves the
     cut back to what the listener heard; from then on each cut is
-    published as `reply.heard`. The language the recognizer last
+    published as reply.heard. The language the recognizer last
     heard in an answered turn is the Session's language, and every messages
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
@@ -212,7 +212,7 @@ class Dialog(StreamComponent):
                 self.emit(output)
 
     def truncate(self) -> None:
-        """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known. Once the client's truncate arrived, every cut is reported as `reply.heard` so the client's caption matches the history."""
+        """Cut the ended reply in the history after the last sentence whose audio ended by the heard position: the client's truncate, never past the audio the graph delivered, and nothing when neither is known. Once the client's truncate arrived, every cut is reported as reply.heard so the client's caption matches the history."""
         assert self.emit is not None and self.truncatable is not None
         turn, index = self.truncatable
         heard_ms = min(

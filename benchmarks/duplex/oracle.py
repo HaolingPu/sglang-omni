@@ -449,8 +449,7 @@ def evaluate_trace(
             ):
                 # note (luojiaxuan): a server with an alignment node reports how far
                 # a reply's delivered audio covers its text; it changes no state.
-                # After a truncate, sglang.response.heard reports how much of the cut
-                # reply the history kept; it changes no state either.
+                # note (Haoling Pu): sglang.response.heard, sent after a truncate, changes no state either.
                 check(
                     event.response_id in response_states,
                     f"{event_type}: unknown response",

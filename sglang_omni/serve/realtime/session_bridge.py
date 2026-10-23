@@ -208,7 +208,7 @@ class SessionBridge(InteractionAdapter):
         self.response_id: str | None = None
         self.response_item_id = ""
         self.response_turn: int | None = None
-        # The last ended response as (turn, response id, item id); a truncate still cuts it until the next reply starts.
+        # note (Haoling Pu): a truncate still cuts the last ended response (turn, response id, item id) until the next reply starts.
         self.ended_response: tuple[int | None, str, str] | None = None
         self.response_text = ""
         self.has_audio = False

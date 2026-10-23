@@ -32,6 +32,18 @@ export function heardTextEnd(progress, playedMs) {
   return textEnd;
 }
 
+// note (Haoling Pu): the server counts text_end in code points, while String.slice counts UTF-16 code units.
+function codeUnitOffset(text, codePoints) {
+  let offset = 0;
+  let count = 0;
+  for (const char of text) {
+    if (count === codePoints) break;
+    offset += char.length;
+    count += 1;
+  }
+  return offset;
+}
+
 export class DuplexSession {
   // transport(event) sends one JSON-serialisable client event; now() returns ms.
   constructor({ transport, now, outputModalities = ["audio"], listeners = {} }) {
@@ -77,20 +89,19 @@ export class DuplexSession {
   }
 
   // What the caption shows of a reply: the heard part and the part still to play. A reply that ended
-  // other than completed, or that the player stopped and the server cut, keeps only what was heard:
-  // the prefix the server's history kept once it reports one, else the progress the player passed,
-  // and nothing when none of its audio played. A reply without progress from the server is shown
-  // whole until it is cut.
+  // other than completed, or that the player stopped, keeps only what was heard: the prefix the
+  // server's history kept once it reports one, else the progress the player passed, and nothing when
+  // none of its audio played. A reply without progress from the server is shown whole until it is cut.
   captionParts(responseId) {
     const reply = this.reply(responseId);
     if (!reply) return { heard: "", pending: "" };
-    const cut = (reply.status !== null && reply.status !== "completed") || (reply.stopped && reply.keptEnd !== null);
+    const cut = (reply.status !== null && reply.status !== "completed") || reply.stopped;
     if (cut && reply.playedMs <= 0) return { heard: "", pending: "" };
     let end;
     if (cut && reply.keptEnd !== null) {
-      end = Math.min(reply.keptEnd, reply.text.length);
+      end = codeUnitOffset(reply.text, reply.keptEnd);
     } else if (reply.progress.length) {
-      end = this.heardEnd(responseId);
+      end = codeUnitOffset(reply.text, this.heardEnd(responseId));
     } else if (cut) {
       end = 0;
     } else {

@@ -59,7 +59,7 @@ test("a reply played to its end sends no truncate and is heard in full", () => {
 test("a reply that ends cut keeps only its heard prefix, nothing when none of it played", () => {
   const { session } = openSession();
   session.played("resp_0", 950, true);
-  assert.deepEqual(session.captionParts("resp_0"), { heard: "One, ", pending: "two, three." });
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "One, ", pending: "" });
   session.handle({ type: "response.done", response: { id: "resp_0", status: "cancelled" } });
   assert.deepEqual(session.captionParts("resp_0"), { heard: "One, ", pending: "" });
 
@@ -102,8 +102,18 @@ test("a completed reply the player stops keeps the prefix the history kept", () 
   const { session } = openSession(MODEL_REPLY, [{ textEnd: 87, audioMs: 6560 }]);
   session.handle({ type: "response.done", response: { id: "resp_0", status: "completed" } });
   session.played("resp_0", 2352, true);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "", pending: "" });
   heard(session, 3);
   assert.deepEqual(session.captionParts("resp_0"), { heard: "I’m", pending: "" });
+});
+
+test("text_end counts code points, so a character outside the BMP is kept whole", () => {
+  const { session } = openSession("A𠮷B", [{ textEnd: 2, audioMs: 400 }]);
+  session.played("resp_0", 500, false);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "A𠮷", pending: "B" });
+  interrupt(session, 500);
+  heard(session, 3);
+  assert.deepEqual(session.captionParts("resp_0"), { heard: "A𠮷B", pending: "" });
 });
 
 test("late updates after a cut neither erase the heard text nor restore cancelled text", () => {
