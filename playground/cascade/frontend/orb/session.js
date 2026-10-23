@@ -102,6 +102,11 @@ export class DuplexSession {
     this.emit("played", responseId);
   }
 
+  // A local interrupt asks a turn-based server to stop the open reply; the player's truncate then cuts its history.
+  cancelReply() {
+    if (this.state === "ready" && this.turnBased && this.responseOpen) this.send("response.cancel");
+  }
+
   get turnBased() {
     return Boolean(this.granted) && this.granted.interaction === "turn_based";
   }
