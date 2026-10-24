@@ -5,25 +5,29 @@ SGLang-Omni serves a live voice conversation on `/v1/realtime` in two ways. A na
 | Model | Interaction | Launch |
 | --- | --- | --- |
 | MiniCPM-o 4.5 | Native full duplex, audio and camera input | [Native Full Duplex: MiniCPM-o](#native-full-duplex-minicpm-o) |
+| PersonaPlex | Native full duplex, audio input | [Native Full Duplex: PersonaPlex](#native-full-duplex-personaplex) |
 | Streaming cascade | Turn-based, with interruption | [Streaming Cascade](#streaming-cascade) |
 
 ## Native Full Duplex: MiniCPM-o
 
-[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) is served for full duplex with its own config; [MiniCPM-o](../cookbook/minicpm_o.md) covers its installation and chat usage.
+[MiniCPM-o 4.5](https://huggingface.co/openbmb/MiniCPM-o-4_5) is served for full duplex with its `session` variant; [MiniCPM-o](../cookbook/minicpm_o.md) covers its installation and chat usage.
 
 ```bash
 python -m sglang_omni.cli serve \
-  --config examples/full_duplex/minicpmo.yaml \
-  --model-path openbmb/MiniCPM-o-4_5 \
+  --model-path openbmb/MiniCPM-o-4_5 --variant session \
   --enable-realtime --port 8000
 ```
 
-We provide two demonstrative config files.
+`--variant session` selects the full-duplex pipeline, which `serve` refuses to start without `--enable-realtime`. Every setting below is changed with a flag of the same name, for example `--max_sessions 4`, and `config resolve` with the same arguments prints the whole configuration:
 
-| Config | Use it for |
+```bash
+sgl-omni config resolve --model-path openbmb/MiniCPM-o-4_5 --variant session
+```
+
+| Serving | Flags |
 |---|---|
-| `examples/full_duplex/minicpmo.yaml` | Normal serving. Sampling matches the MiniCPM-o demo |
-| `examples/full_duplex/minicpmo-parity.yaml` | Repeatable output for regression and parity recordings. Differs in greedy sampling, `top_k: 100`, and running the thinker and talker without CUDA graphs |
+| Normal | None. The defaults match the MiniCPM-o demo |
+| Repeatable output for regression and parity recordings | `--sampling.greedy true --sampling.top_k 100 --thinker.engine.disable_cuda_graph true --talker.engine.disable_cuda_graph true`: greedy sampling, `top_k` 100, and the thinker and talker without CUDA graphs |
 
 | Setting | Default | Meaning |
 |---|---|---|
@@ -34,8 +38,8 @@ We provide two demonstrative config files.
 | `speech.enable_dit_torch_compile` | `false` | Compile the voice decoder's flow model with `torch.compile` while the server starts; CUDA only |
 | `speech.n_timesteps` | 5 | Flow-matching steps per audio chunk; fewer steps decode faster at some cost in voice quality |
 | `stages.thinker/talker.engine.enable_torch_compile` | `false` | Compiles every decode graph batch size; adds minutes to startup |
-| `sampling` | see the config | Default sampling when a session does not set its own |
-| `vision` | see the config | Camera-frame limits per unit (1 s of audio) |
+| `sampling` | `MiniCPMODuplexSampling` in `sglang_omni/models/minicpm_o/native_config.py` | Default sampling when a session does not set its own; `--sampling.<field>` changes one, such as `--sampling.temperature 0.5` |
+| `vision` | `MiniCPMODuplexVision` in the same file | Camera-frame limits per unit (1 s of audio); `--vision.<field>` changes one, such as `--vision.max_frames_per_unit 2` |
 
 While the server starts, the speech stage records the voice decoder as CUDA graphs for up to 8 conversations decoded together, or `max_sessions` if lower; the graphs hold GPU memory and add to startup time, and a voice whose reference audio is longer than the default voice's is decoded without them.
 
@@ -87,12 +91,51 @@ Session settings go in the `sglang` field of `session.update`, before the first 
 | Setting | Field | Notes |
 |---|---|---|
 | Voice | `reference_audio` | `{"media_type": "audio/wav", "data": "<base64>"}`, a PCM16 WAV of at most 30 s and 1 MiB; `tts_reference_audio` changes only the output voice |
-| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the defaults in `examples/full_duplex/minicpmo.yaml` |
+| Sampling | `sampling` | For example `temperature`, `top_p` and `listen_prob_scale`; unset fields keep the server's defaults (`sampling` above) |
 | Image detail | `max_slice_nums` | Higher is sharper but accepts fewer frames per second |
 
 Send camera frames with `sglang.input_image.append`: a base64 JPEG or PNG in `image`, and its position on the audio timeline in `sglang.t_ms`. By default up to 4 frames per second are accepted; `session.updated` reports the actual limit.
 
 [Full-Duplex-Bench](full_duplex_bench.md) measures a native full-duplex deployment.
+
+## Native Full Duplex: PersonaPlex
+
+[PersonaPlex](https://huggingface.co/nvidia/personaplex-7b-v1) is served for full duplex with its `session` variant; [PersonaPlex](../cookbook/personaplex.md) covers its installation and offline usage.
+
+```bash
+python -m sglang_omni.cli serve \
+  --model-path nvidia/personaplex-7b-v1 --variant session \
+  --enable-realtime --port 8000
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `max_sessions` | 1 | Conversations at the same time. Further connections get HTTP 503. The LM keeps `max_sessions + 1` request slots, and a lower `--lm.engine.max_running_requests` is rejected at startup |
+| `voice` | `NATF2` | Packaged voice name, or the path of a voice recording, used when a session names no voice |
+| `instructions` | the offline role prompt | Role prompt used when a session sends no `instructions` |
+| `sampling` | the offline defaults | Default sampling when a session does not set its own: `temperature`, `top_k`, `top_p`, `min_p`, `repetition_penalty`, `audio_temperature`, `audio_top_k`, `seed` |
+| `--code2wav.factory.max_graph_frames` | 2 | Mimi decode replays CUDA graphs for units of up to this many frames, for up to `max_sessions` conversations decoded together; `0` turns the graphs off |
+| `--mimi_encode.factory.max_concurrency` | 1 | Conversations whose audio Mimi encodes at the same time |
+| `--preprocessing.factory.voice_prompt_cache_bytes` | 512 MiB | Memory for the voice prompts loaded so far |
+
+Every 80 ms of input has to pass Mimi encode, the LM and Mimi decode within 80 ms, or the conversation falls behind; concurrent conversations share that budget, and the LM decodes synchronously. The first conversation after the server starts waits several seconds while the LM runs its first steps. A conversation holds at most the LM context, 8192 positions or about 10.8 minutes (`--lm.engine.context_length` changes it); the unit that would pass it ends the session with `context_exhausted`.
+
+The full-duplex server is ready when this returns JSON containing `"native_full_duplex":true`, `"native_unit_ms":80` and the packaged voices under `voices`:
+
+```bash
+curl --fail http://localhost:8000/v1/realtime/capabilities
+```
+
+The protocol follows the [MiniCPM-o steps](#full-duplex-protocol), with these differences:
+
+| Setting | Field | Notes |
+|---|---|---|
+| Audio | `input_audio_buffer.append` | 24 kHz mono PCM16 in, 24 kHz out; the server pads a trailing partial 80 ms unit |
+| Role prompt | `instructions` | Replaces the deployment's role prompt |
+| Voice | `sglang.voice` | One of the `voices` in the capabilities |
+| Sampling | `sglang.sampling` | The fields listed under `sampling` above; unset fields keep the deployment defaults |
+
+The whole session is one response: `response.created` arrives with the first output, each unit brings 80 ms of agent audio (160 ms for the first), and `response.done` follows the end of the input. The transcript is the words the model speaks, streamed word piece by word piece. The session variant only accepts `/v1/realtime` requests; use the default pipeline for `/generate` and chat completions.
 
 ## Streaming Cascade
 
@@ -191,7 +234,7 @@ Each service picks its GPUs through `env`, as `qwen3-asr-qwen3.8-27b-customvoice
 
 ### The forced-alignment worker
 
-An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy` and `pydantic` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
+An `alignment` node with `method: forced` sends each finished sentence and its audio to a worker that returns word boundaries. The worker cannot be a `services` entry: it answers `/health` and `/align` but not the `/v1/models` request the server waits for, and it needs the `qwen-asr` package, which pins a `transformers` release of its own, so it runs from a separate virtual environment. In that environment install `qwen-asr`, `fastapi` and `uvicorn`, plus `httpx`, `msgpack`, `msgspec`, `numpy`, `pydantic` and `websockets` for the modules it shares with the server, then start it from the repository root before `sgl-omni serve`:
 
 ```bash
 PYTHONPATH=. python examples/streaming_cascade/alignment_worker.py --model Qwen/Qwen3-ForcedAligner-0.6B --device cuda:0 --language English --port 8010
