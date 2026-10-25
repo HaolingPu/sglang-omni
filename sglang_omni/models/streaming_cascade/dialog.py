@@ -57,22 +57,16 @@ def heard_prefix(
     return text_end, heard_ms > audio_ms and bool(text[text_end:].strip())
 
 
-# note (Haoling Pu): a cut or empty reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments or nothing (#3063).
+# note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
 INTERRUPTED_NOTE = " A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
 
 
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
-    """The history as the model reads it: empty replies are left out, the questions around one are joined so turns still alternate, and a reply the listener cut ends with … under a system note."""
+    """The history as the model reads it: a reply the listener cut ends with … under a system note."""
     prompt: list[ChatMessage] = []
     for message in messages:
-        if message.role == "assistant" and not message.content:
-            pass
-        elif message.is_interrupted:
+        if message.is_interrupted and message.content:
             prompt.append(ChatMessage(role="assistant", content=message.content + "…"))
-        elif message.role == "user" and prompt[-1].role == "user":
-            prompt[-1] = ChatMessage(
-                role="user", content=f"{prompt[-1].content} {message.content}"
-            )
         else:
             prompt.append(message)
     if any(message.is_interrupted and message.content for message in messages):
@@ -106,7 +100,9 @@ class Dialog(StreamComponent):
     reply stays in the history only up to the last sentence whose audio the
     graph delivered (`reply.delivered`), and a client `truncate` moves the
     cut back to what the listener heard; from then on each cut is
-    published as reply.heard. The language the recognizer last
+    published as reply.heard. A reply the history keeps nothing of when the
+    next reply begins leaves no entry, and the next utterance joins the user
+    message it followed. The language the recognizer last
     heard in an answered turn is the Session's language, and every messages
     chunk carries it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
@@ -306,7 +302,14 @@ class Dialog(StreamComponent):
                 "conversation exceeds max_history_chars; open a new session"
             )
         else:
-            self.messages.append(ChatMessage(role="user", content=text))
+            if self.messages[-1].role == "assistant" and not self.messages[-1].content:
+                # note (luojiaxuan): Nothing of the last reply was heard, so the user kept talking; an empty assistant entry would only show the model an empty answer to copy.
+                self.messages.pop()
+                self.messages[-1] = ChatMessage(
+                    role="user", content=f"{self.messages[-1].content} {text}"
+                )
+            else:
+                self.messages.append(ChatMessage(role="user", content=text))
             if language is not None:
                 self.language = language
             else:
