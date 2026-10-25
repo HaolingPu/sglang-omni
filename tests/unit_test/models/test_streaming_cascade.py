@@ -279,9 +279,10 @@ async def test_a_truncate_after_speech_over_a_reply_keeps_the_heard_sentences_an
     assert dialog.messages[2].content == "One two.\nThree four."
     assert dialog.messages[2].uncertain
     prompt = [o for o in outputs if o.format == MESSAGES][-1]
+    assert prompt.payload["messages"][0]["content"].endswith(INTERRUPTED_NOTE)
     assert prompt.payload["messages"][2] == {
         "role": "assistant",
-        "content": "One two.\nThree four.",
+        "content": "One two.\nThree four.…",
     }
     assert messages_of(prompt)[-1].content == "what did you say"
 
@@ -491,9 +492,9 @@ async def test_a_partly_heard_reply_keeps_its_heard_prefix_between_the_questions
     )
     outputs = await drain(dialog, inputs)
     assert prompts(outputs)[-1] == [
-        ("system", dialog.config.system_prompt),
+        ("system", dialog.config.system_prompt + INTERRUPTED_NOTE),
         ("user", "question"),
-        ("assistant", "One two.\nThree four."),
+        ("assistant", "One two.\nThree four.…"),
         ("user", "wait, what?"),
     ]
 
@@ -655,7 +656,7 @@ async def test_a_reply_that_finished_stays_whole_without_a_truncate():
             "after_its_first_sentence",
             [
                 ("user", "Ten companies."),
-                ("assistant", "One two."),
+                ("assistant", "One two.…"),
                 ("user", "That let you teach English online."),
             ],
         ),
@@ -702,8 +703,9 @@ async def test_speech_that_resumes_after_the_utterance_ended_interrupts_its_repl
         TURN_STARTED,
         None,
     ]
+    note = INTERRUPTED_NOTE if any(role == "assistant" for role, _ in history) else ""
     assert [(m.role, m.content) for m in messages_of(outputs[-1])] == [
-        ("system", dialog.config.system_prompt),
+        ("system", dialog.config.system_prompt + note),
         *history,
     ]
 
