@@ -57,6 +57,33 @@ def heard_prefix(
     return text_end, heard_ms > audio_ms and bool(text[text_end:].strip())
 
 
+# note (Haoling Pu): a cut or empty reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments or nothing (#3063).
+INTERRUPTED_NOTE = " A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
+
+
+def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """The history as the model reads it: empty replies are left out, the questions around one are joined so turns still alternate, and a reply the listener cut ends with … under a system note."""
+    prompt: list[ChatMessage] = []
+    for message in messages:
+        if message.role == "assistant" and not message.content:
+            pass
+        elif message.is_interrupted:
+            prompt.append(ChatMessage(role="assistant", content=message.content + "…"))
+        elif message.role == "user" and prompt[-1].role == "user":
+            prompt[-1] = ChatMessage(
+                role="user", content=f"{prompt[-1].content} {message.content}"
+            )
+        else:
+            prompt.append(message)
+    if any(message.is_interrupted and message.content for message in messages):
+        prompt[0] = ChatMessage(
+            role="system", content=prompt[0].content + INTERRUPTED_NOTE
+        )
+    else:
+        pass
+    return prompt
+
+
 class DialogConfig(ComponentConfig):
     """Conversation history; one messages chunk per answered utterance."""
 
@@ -258,6 +285,7 @@ class Dialog(StreamComponent):
                 role="assistant",
                 content=content[:text_end].rstrip(),
                 uncertain=uncertain,
+                is_interrupted=content[:text_end].rstrip() != content.rstrip(),
             )
             if self.heard_ms is not None:
                 self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
@@ -290,5 +318,5 @@ class Dialog(StreamComponent):
             self.heard_ms = None
             return [
                 control_chunk(TURN_STARTED, turn=turn),
-                messages_chunk(self.messages, turn, self.language),
+                messages_chunk(prompt_messages(self.messages), turn, self.language),
             ]

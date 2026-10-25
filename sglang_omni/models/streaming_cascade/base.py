@@ -66,11 +66,12 @@ class StreamComponent:
 
 
 class ChatMessage(BaseModel):
-    """One history entry; `uncertain` marks an assistant reply cut where the listener may have heard part of the next sentence, and stays out of the model's prompt."""
+    """One history entry; `uncertain` marks an assistant reply cut where the listener may have heard part of the next sentence, `is_interrupted` an assistant reply the listener cut before its end. Neither field goes into the request; is_interrupted changes how the prompt shows the reply."""
 
     role: Literal["system", "user", "assistant"]
     content: str = ""
     uncertain: bool = False
+    is_interrupted: bool = False
 
 
 def control_chunk(
@@ -139,7 +140,9 @@ def messages_chunk(
 
 
 def message_dict(message: ChatMessage) -> dict[str, object]:
-    return message.model_dump(exclude_none=True, exclude={"uncertain"})
+    return message.model_dump(
+        exclude_none=True, exclude={"uncertain", "is_interrupted"}
+    )
 
 
 def audio_chunk(samples: np.ndarray, sample_rate_hz: int, turn: int) -> TimedChunk:
