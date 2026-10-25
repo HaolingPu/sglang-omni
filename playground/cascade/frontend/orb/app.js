@@ -255,6 +255,7 @@ function renderHeard() {
   const parts = session.captionParts(id);
   const key = `${id}:${parts.heard.length}:${parts.pending.length}`;
   if (ui.caption.dataset.key === key) return;
+  const sameReply = (ui.caption.dataset.key || "").startsWith(`${id}:`);
   ui.caption.dataset.key = key;
   const heard = document.createElement("span");
   heard.className = "heard";
@@ -263,6 +264,20 @@ function renderHeard() {
   pending.className = "pending";
   pending.textContent = parts.pending;
   ui.caption.replaceChildren(heard, pending);
+  // A caption taller than its room scrolls so the line being heard and the one after it stay in view, from a line's top.
+  // Before the server reports progress the whole reply counts as heard, so the caption stays at its start, where playback starts.
+  const lineHeight = parseFloat(getComputedStyle(ui.caption).lineHeight);
+  let heardBottom;
+  if (reply.progress.length || reply.keptEnd !== null) {
+    heardBottom = heard.getBoundingClientRect().bottom - ui.caption.getBoundingClientRect().top + ui.caption.scrollTop;
+  } else {
+    heardBottom = 0;
+  }
+  const maxTop = ui.caption.scrollHeight - ui.caption.clientHeight;
+  const top = Math.min(Math.max(0, Math.ceil((heardBottom + lineHeight - ui.caption.clientHeight) / lineHeight) * lineHeight), maxTop);
+  ui.caption.scrollTo({ top, behavior: sameReply ? "smooth" : "instant" });
+  ui.caption.dataset.above = String(top > 0);
+  ui.caption.dataset.below = String(top < maxTop - 1);
 }
 
 function setSheet(open) {
@@ -548,6 +563,10 @@ try {
   if (saved) document.documentElement.dataset.theme = saved;
 } catch {}
 window.addEventListener("beforeunload", () => { if (session && isOpen()) session.close(); });
+window.addEventListener("resize", () => {
+  delete ui.caption.dataset.key;
+  renderHeard();
+});
 setInterval(tick, 250);
 setInterval(pollStatus, STATUS_POLL_MS);
 pollStatus();
