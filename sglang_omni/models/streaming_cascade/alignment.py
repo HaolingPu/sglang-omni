@@ -278,12 +278,7 @@ class Alignment(StreamComponent):
         ):
             self.reply.delivered_ms = float(chunk.payload["audio_ms"])
             self.cut(self.reply, sentences)
-        elif (
-            event == TRUNCATE
-            and self.config.hears()
-            and self.reply is not None
-            and chunk.turn in (None, self.reply.turn)
-        ):
+        elif event == TRUNCATE and self.config.hears() and self.reply is not None:
             self.reply.client_ms = float(chunk.payload["t_ms"])
             self.cut(self.reply, sentences)
         else:

@@ -205,8 +205,6 @@ class SessionBridge(InteractionAdapter):
         self.response_id: str | None = None
         self.response_item_id = ""
         self.response_turn: int | None = None
-        # note (Haoling Pu): a client truncate names an item, so each reply item keeps its turn.
-        self.item_turns: dict[str, int | None] = {}
         self.response_text = ""
         self.has_audio = False
 
@@ -280,9 +278,7 @@ class SessionBridge(InteractionAdapter):
             self.pending_input_sequence = None
             self.input_done = None
 
-    async def append_control(
-        self, control: dict[str, object], turn: int | None = None
-    ) -> None:
+    async def append_control(self, control: dict[str, object]) -> None:
         async with self.append_lock:
             await self.append_chunk(
                 TimedChunk(
@@ -292,7 +288,6 @@ class SessionBridge(InteractionAdapter):
                     self.next_input_sequence,
                     control,
                     format=SESSION_CONTROL,
-                    turn=turn,
                 )
             )
 
@@ -311,10 +306,8 @@ class SessionBridge(InteractionAdapter):
             should_preempt=True,
         )
 
-    async def truncate(self, item_id: str, audio_end_ms: float) -> None:
-        await self.append_control(
-            {"type": TRUNCATE, "t_ms": audio_end_ms}, self.item_turns.get(item_id)
-        )
+    async def truncate(self, audio_end_ms: float) -> None:
+        await self.append_control({"type": TRUNCATE, "t_ms": audio_end_ms})
 
     async def commit(self) -> None:
         await self.append_control({"type": COMMIT})
@@ -401,7 +394,6 @@ class SessionBridge(InteractionAdapter):
             self.response_id = f"resp_{self.turn_count}"
             self.response_turn = turn
             self.response_item_id = f"item_{self.turn_count}"
-            self.item_turns[self.response_item_id] = turn
             self.turn_count += 1
             self.response_text = ""
             self.has_audio = False
