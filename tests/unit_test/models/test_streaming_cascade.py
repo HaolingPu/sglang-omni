@@ -26,6 +26,7 @@ from sglang_omni.models.streaming_cascade.base import (
     audio_chunk,
     messages_chunk,
     messages_of,
+    sentence_end,
     sentences,
     text_chunk,
     transcript_chunk,
@@ -226,6 +227,47 @@ async def test_sentences_split_after_an_abbreviation():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "reply, spans",
+    [
+        (
+            "I apologize for the short answer earlier. ",
+            ["I apologize for the", " short answer earlier.", " "],
+        ),
+        (
+            "Dolphins recognize their friends, just like people recognize names. ",
+            [
+                "Dolphins recognize their friends,",
+                " just like people recognize names.",
+                " ",
+            ],
+        ),
+        (
+            "While a full history is too long to give here, the main points are clear. ",
+            [
+                "While a full history is too",
+                " long to give here,",
+                " the main points are clear.",
+                " ",
+            ],
+        ),
+    ],
+    ids=["two-halves", "clause-end", "long-sentence"],
+)
+async def test_a_long_sentence_is_cut_into_spans_of_at_least_half_the_cap(reply, spans):
+    """A sentence one word past the cap left its last word to be synthesized alone, which sometimes ran the speech model to its length limit."""
+    assert await spans_of(*(word + " " for word in reply.split()), max_words=6) == spans
+
+
+def test_a_long_sentence_is_cut_once_its_rest_cannot_be_shorter_than_half_the_cap():
+    assert sentence_end("one two three four five six ", 6) is None
+    assert sentence_end("one two three four five six seven ", 6) is None
+    assert sentence_end("one two three four five six seven eight ", 6) == len(
+        "one two three four five six"
+    )
+
+
+@pytest.mark.asyncio
 async def test_sentences_keep_the_word_cap():
     assert await spans_of("one two three four five", max_words=2) == [
         "one two",
@@ -384,6 +426,45 @@ def prompts(outputs: list[TimedChunk]) -> list[list[tuple[str, str]]]:
         [(message.role, message.content) for message in messages_of(o)]
         for o in outputs
         if o.format == MESSAGES
+    ]
+
+
+SECOND_REPLY = "Sure. Here it is."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "during, after, second",
+    [
+        ([control_chunk(TRUNCATE, turn=1, t_ms=1200)], [], SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=1, t_ms=200)], SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=1000)] * 2, "Sure."),
+        ([], [control_chunk(TRUNCATE, turn=2, t_ms=60000)], SECOND_REPLY),
+        ([], [control_chunk(TRUNCATE, t_ms=1000)], "Sure."),
+    ],
+    ids=["late", "stale", "repeated", "past-the-end", "unnamed"],
+)
+async def test_a_truncate_cuts_only_the_reply_of_its_turn(during, after, second):
+    """A truncate cut whichever ended reply the dialog still held, so one for an earlier reply cut the next one."""
+    dialog, inputs = interrupted_dialog(
+        control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2300),
+        control_chunk(SPEECH_STOPPED),
+        transcript_chunk("next", True),
+        text_chunk(SECOND_REPLY, 2),
+        *during,
+        lambda: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=2, text_end=5, audio_ms=800)
+        ),
+        lambda: dialog.control(
+            control_chunk(REPLY_PROGRESS, turn=2, text_end=17, audio_ms=1600)
+        ),
+        control_chunk(TURN_DONE, turn=2),
+        *after,
+    )
+    await drain(dialog, inputs)
+    assert [message.content for message in dialog.messages[2::2]] == [
+        "One two.\nThree four.",
+        second,
     ]
 
 
@@ -1636,10 +1717,12 @@ def transcribing(transcript: str, requests: list[httpx.Request]):
     return handler
 
 
-def interrupted_speech(*after: object, language: str | None = None) -> list[object]:
-    """SPOKEN with its first sentence ended at 2000 ms and 1000 ms of " Five six." spoken when the reply is interrupted, with `after` fed next."""
+def interrupted_speech(
+    *after: object, language: str | None = None, text: str = SPOKEN
+) -> list[object]:
+    """Reply audio interrupted after its first sentence and one second of its second."""
     return [
-        text_chunk(SPOKEN, 1, language),
+        text_chunk(text, 1, language),
         *(speech() for _ in range(4)),
         control_chunk(REPLY_PROGRESS, turn=1, text_end=19, audio_ms=2000),
         speech(),
@@ -1669,6 +1752,61 @@ async def test_the_asr_method_keeps_the_prefix_of_the_interrupted_sentence_its_d
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sentence, transcript, prefix, language",
+    [
+        (
+            "Buy 350 long-term boxes.",
+            "buy three hundred fifty longterm",
+            "Buy 350 long-term",
+            "English",
+        ),
+        (
+            "Buy 350 long-term boxes.",
+            "Buy 350 long-term",
+            "Buy 350 long-term",
+            "English",
+        ),
+        ("Buy 21 apples.", "Buy twenty", "Buy", "English"),
+        ("Buy twenty apples.", "Buy 21", "Buy", "English"),
+        ("Buy 21 apples.", "Buy twenty-one", "Buy 21", "English"),
+        (
+            "Buy 350 apples.",
+            "Buy three hundred fifty apples",
+            "Buy 350 apples.",
+            "English",
+        ),
+        ("Wait 3.14 seconds.", "Wait three fourteen", "Wait", "English"),
+        ("Wait 3.14 seconds.", "Wait three point one four", "Wait 3.14", "English"),
+        ("Buy 1,000 apples.", "Buy 1,00", "Buy", "English"),
+        ("Wait 3-5 days.", "Wait three five", "Wait", "English"),
+        ("Wait 3-5 days.", "Wait three to five days", "Wait 3-5 days.", "English"),
+        ("预算21元。", "预算二十一", "预算21", "English"),
+        ("预算3.14元。", "预算三点一", "预算", "Chinese"),
+        ("预算3.14元。", "预算三点一四元", "预算3.14元。", "Chinese"),
+        ("Count 8 9 10.", "Count 八九十", "Count 8 9 10.", "English"),
+    ],
+)
+async def test_asr_normalization_preserves_complete_original_units(
+    sentence: str, transcript: str, prefix: str, language: str
+) -> None:
+    """Number expansion lost reply offsets or committed a number before its last word."""
+    earlier_text = "One two three four."
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing(transcript, [])),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2600),
+            language=language,
+            text=f"{earlier_text} {sentence}",
+        ),
+    )
+    assert spoken_progress(outputs) == [
+        (len(earlier_text), 2000),
+        (len(earlier_text) + 1 + len(prefix), 2600),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_client_truncate_before_the_delivered_audio_moves_the_heard_cut_back():
     requests = []
     outputs = await drain(
@@ -1681,6 +1819,20 @@ async def test_a_client_truncate_before_the_delivered_audio_moves_the_heard_cut_
     )
     assert [heard_frames(request) for request in requests] == [800 * 24, 300 * 24]
     assert spoken_progress(outputs) == [(19, 2000), (24, 2800), (24, 2300)]
+
+
+@pytest.mark.asyncio
+async def test_a_client_truncate_of_another_turn_leaves_the_heard_cut():
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("five", requests)),
+        interrupted_speech(
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=2800),
+            control_chunk(TRUNCATE, turn=0, t_ms=2300),
+        ),
+    )
+    assert [heard_frames(request) for request in requests] == [800 * 24]
+    assert spoken_progress(outputs) == [(19, 2000), (24, 2800)]
 
 
 @pytest.mark.asyncio
