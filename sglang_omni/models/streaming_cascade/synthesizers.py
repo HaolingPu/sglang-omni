@@ -45,8 +45,9 @@ def has_chinese_characters(sentence: str) -> bool:
     return any("\u4e00" <= char <= "\u9fff" for char in sentence)
 
 
-CHINESE_LANGUAGES = frozenset({"Chinese", "Cantonese"})
-CJK_LANGUAGES = CHINESE_LANGUAGES | {"Japanese", "Korean"}
+CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
+KANA = re.compile("[\u3040-\u30ff]")
+HANGUL = re.compile("[\uac00-\ud7af]")
 
 
 class OpenAISpeechSynthesizerConfig(ComponentConfig):
@@ -54,10 +55,11 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
 
     `language` is the service's language tag: empty leaves it to the
     service, `auto` follows the language the recognizer heard from the
-    user, and any other name tags every sentence without Chinese characters.
-    Without a known user language `auto` tags by script like `English`.
-    A sentence tagged English, with no Chinese characters, reaches the
-    service with its numbers read out as words.
+    user except in a sentence whose script contradicts it, which is tagged by
+    its script, and any other name tags every sentence without Chinese
+    characters. Without a known user language `auto` tags by script like
+    `English`. A sentence tagged English reaches the service with its numbers
+    read out as words.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -149,21 +151,27 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
 
     def sentence_language(self, sentence: str) -> str:
         """The language tag of one sentence."""
-        is_chinese = has_chinese_characters(sentence)
+        if KANA.search(sentence):
+            script = "Japanese"
+        elif HANGUL.search(sentence):
+            script = "Korean"
+        elif has_chinese_characters(sentence):
+            script = "Chinese"
+        elif any(char.isascii() and char.isalpha() for char in sentence):
+            script = "English"
+        else:
+            script = ""
         # note (Haoling Pu): a sentence whose script contradicts the session language, as in a reply the user asked for in another language, is tagged by its script.
-        has_latin_letters = any(char.isascii() and char.isalpha() for char in sentence)
-        is_switched = (is_chinese and self.session_language not in CJK_LANGUAGES) or (
-            not is_chinese
-            and has_latin_letters
-            and self.session_language in CHINESE_LANGUAGES
+        is_switched = self.session_language is not None and (
+            (script in ("Japanese", "Korean") and script != self.session_language)
+            or (script == "Chinese" and self.session_language not in CJK_LANGUAGES)
+            or (script == "English" and self.session_language in CJK_LANGUAGES)
         )
-        if (
-            self.config.language == "auto"
-            and self.session_language is not None
-            and not is_switched
-        ):
+        if self.config.language == "auto" and is_switched:
+            return script
+        elif self.config.language == "auto" and self.session_language is not None:
             return self.session_language
-        elif is_chinese:
+        elif has_chinese_characters(sentence):
             # Note (Junnan Li): A sentence with CJK characters is spoken as Chinese whatever the configured language, so a reply in the user's language keeps the right tag.
             return "Chinese"
         elif self.config.language == "auto":
@@ -194,7 +202,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         if self.config.language:
             language = self.sentence_language(sentence)
             body["language"] = language
-            if language == "English" and not has_chinese_characters(sentence):
+            if language == "English":
                 # Note (ruoyu): A Base voice cloned from a Chinese reference read the digits of English sentences as Chinese numerals in 12 of 50 takes and the same numbers written as words in 0 of 50; the aligner reads the digits with the same words.
                 body["input"] = spoken_text(sentence, language)[0]
             else:

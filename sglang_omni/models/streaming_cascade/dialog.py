@@ -3,6 +3,7 @@
 
 import logging
 import math
+import re
 from collections import deque
 from collections.abc import AsyncIterator
 from typing import Literal
@@ -60,8 +61,9 @@ def heard_prefix(
 # note (Haoling Pu): a short utterance or a noise ("嗯。", "Okay.") is often recognized in the wrong language, so it neither changes the session language nor leads the reply into its language.
 MIN_LANGUAGE_WORDS = 3
 MIN_LANGUAGE_CJK_CHARS = 3
+CJK_CHAR = re.compile("[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
 SHORT_UTTERANCE_NOTE = (
-    " The user's last message is too short to tell their language; reply in {language}."
+    "The user's last message is too short to tell their language; reply in {language}."
 )
 # note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
 CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
@@ -116,12 +118,13 @@ class Dialog(StreamComponent):
     each cut is published as reply.heard. A reply the history keeps nothing
     of when the next reply begins leaves no entry, and the next utterance
     joins the user message it followed. The language the recognizer heard in
-    the last utterance of at least 3 words or 3 Chinese characters is the
-    Session's language, and every messages chunk carries it; a shorter
-    utterance in another language leaves it, and that turn's prompt asks for
-    a reply in it. A replacement adopts the history, the open reply and
-    the waiting utterances, so new
-    settings apply at once and reach the next prompt.
+    the last utterance of at least 3 words or 3 Chinese, Japanese or Korean
+    characters is the Session's language, and every messages chunk carries
+    it; a shorter utterance leaves it unchanged, and when the recognizer
+    heard another language in it, that turn's prompt asks for a reply in the
+    Session's language. A replacement adopts the history, the open reply and
+    the waiting utterances, so new settings apply at once and reach the next
+    prompt.
 
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
@@ -319,17 +322,6 @@ class Dialog(StreamComponent):
             else:
                 pass
 
-    def prompt(self, is_short_switch: bool) -> list[ChatMessage]:
-        """The history as the model reads it, with the session language asked for when a short utterance came in another language."""
-        messages = prompt_messages(self.messages)
-        if is_short_switch:
-            system = messages[0].content + SHORT_UTTERANCE_NOTE.format(
-                language=self.language
-            )
-            return [ChatMessage(role="system", content=system), *messages[1:]]
-        else:
-            return messages
-
     def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
         if not text:
@@ -352,9 +344,8 @@ class Dialog(StreamComponent):
                 )
             else:
                 self.messages.append(ChatMessage(role="user", content=text))
-            cjk_chars = sum("\u4e00" <= char <= "\u9fff" for char in text)
             is_clear = (
-                cjk_chars >= MIN_LANGUAGE_CJK_CHARS
+                len(CJK_CHAR.findall(text)) >= MIN_LANGUAGE_CJK_CHARS
                 or len(text.split()) >= MIN_LANGUAGE_WORDS
             )
             is_short_switch = (
@@ -367,6 +358,14 @@ class Dialog(StreamComponent):
                 self.language = language
             else:
                 pass
+            prompt = prompt_messages(self.messages)
+            if is_short_switch:
+                note = SHORT_UTTERANCE_NOTE.format(language=self.language)
+                prompt[0] = ChatMessage(
+                    role="system", content=f"{prompt[0].content} {note}"
+                )
+            else:
+                pass
             self.reply = []
             self.reply_turn = turn
             self.progress = []
@@ -374,5 +373,5 @@ class Dialog(StreamComponent):
             self.heard_ms = None
             return [
                 control_chunk(TURN_STARTED, turn=turn),
-                messages_chunk(self.prompt(is_short_switch), turn, self.language),
+                messages_chunk(prompt, turn, self.language),
             ]

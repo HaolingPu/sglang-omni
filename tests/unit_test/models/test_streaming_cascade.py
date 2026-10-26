@@ -2004,12 +2004,14 @@ async def test_openai_transcription_leaves_the_language_out_when_the_service_nam
 
 @pytest.mark.asyncio
 async def test_a_short_utterance_in_another_language_keeps_the_session_language():
+    """A noise recognized as Chinese ("嗯。") switched an English session to Chinese, and the next reply came in Chinese."""
     dialog = build({"kind": "dialog"})
     turns = [
         transcript_chunk("Count to three.", True, "English"),
         transcript_chunk("Okay.", True, "English"),
         transcript_chunk("嗯。", True, "Chinese"),
         transcript_chunk("我们换个话题吧。", True, "Chinese"),
+        transcript_chunk("ありがとうございました。", True, "Japanese"),
     ]
     inputs = []
     for turn, utterance in enumerate(turns, 1):
@@ -2026,17 +2028,50 @@ async def test_a_short_utterance_in_another_language_keeps_the_session_language(
         "English",
         "English",
         "Chinese",
+        "Japanese",
     ]
     note = SHORT_UTTERANCE_NOTE.format(language="English")
     assert [messages_of(o)[0].content for o in chunks] == [
         dialog.config.system_prompt,
         dialog.config.system_prompt,
-        dialog.config.system_prompt + note,
+        f"{dialog.config.system_prompt} {note}",
+        dialog.config.system_prompt,
         dialog.config.system_prompt,
     ]
     replacement = build({"kind": "dialog"})
     replacement.adopt(dialog)
-    assert replacement.language == "Chinese"
+    assert replacement.language == "Japanese"
+
+
+@pytest.mark.asyncio
+async def test_a_short_first_utterance_names_no_language_and_adds_no_note():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("嗯。", True, "Chinese"),
+            text_chunk("Hi.", 1),
+            control_chunk(TURN_DONE, turn=1),
+            control_chunk(COMMIT),
+        ],
+    )
+    chunk = next(o for o in outputs if o.format == MESSAGES)
+    assert chunk.payload.get("language") is None
+    assert messages_of(chunk)[0].content == dialog.config.system_prompt
+
+
+def test_a_short_switch_after_a_cut_reply_adds_both_notes():
+    dialog = build({"kind": "dialog"})
+    dialog.language = "English"
+    dialog.messages += [
+        ChatMessage(role="user", content="Tell me a story."),
+        ChatMessage(role="assistant", content="Once upon a time", is_cut=True),
+    ]
+    note = SHORT_UTTERANCE_NOTE.format(language="English")
+    _, chunk = dialog.respond(1, "嗯。", "Chinese")
+    assert messages_of(chunk)[0].content == (
+        f"{dialog.config.system_prompt} {CUT_REPLY_NOTE} {note}"
+    )
 
 
 @pytest.mark.asyncio
@@ -2121,11 +2156,14 @@ async def test_openai_speech_auto_language_follows_the_user(
 @pytest.mark.parametrize(
     "session_language, sentence, tag",
     [
-        ("English", "Hello there.", "English"),
+        ("French", "Bonjour.", "French"),
         ("English", "你好。", "Chinese"),
+        ("English", "東京へ行きたいです。", "Japanese"),
         ("Chinese", "Hello there.", "English"),
-        ("Chinese", "1, 2, 3.", "Chinese"),
+        ("Chinese", "안녕하세요.", "Korean"),
         ("Japanese", "こんにちは、東京。", "Japanese"),
+        ("Japanese", "東京大学。", "Japanese"),
+        ("Japanese", "Hello there.", "English"),
     ],
 )
 def test_a_sentence_whose_script_contradicts_the_session_is_tagged_by_its_script(
