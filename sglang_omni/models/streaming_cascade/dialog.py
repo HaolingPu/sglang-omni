@@ -57,6 +57,14 @@ def heard_prefix(
     return text_end, heard_ms > audio_ms and bool(text[text_end:].strip())
 
 
+# note (Haoling Pu): a short utterance or a noise ("嗯。", "Okay.") is often recognized in the wrong language, so it neither changes the session language nor leads the reply into its language.
+MIN_LANGUAGE_WORDS = 3
+MIN_LANGUAGE_CJK_CHARS = 3
+SHORT_UTTERANCE_NOTE = (
+    " The user's last message is too short to tell their language; reply in {language}."
+)
+
+
 class DialogConfig(ComponentConfig):
     """Conversation history; one messages chunk per answered utterance."""
 
@@ -81,9 +89,10 @@ class Dialog(StreamComponent):
     cut back to what the listener heard; from then on each cut is
     published as reply.heard. A reply the history keeps nothing of when the
     next reply begins leaves no entry, and the next utterance joins the user
-    message it followed. The language the recognizer last
-    heard in an answered turn is the Session's language, and every messages
-    chunk carries it. A replacement adopts the history, the open reply and
+    message it followed. The language the recognizer heard in the last
+    utterance of at least 3 words or 3 Chinese characters is the Session's
+    language, and every messages chunk carries it; a shorter utterance in
+    another language leaves it, and that turn's prompt asks for a reply in it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
     settings apply at once and reach the next prompt.
 
@@ -266,6 +275,16 @@ class Dialog(StreamComponent):
             else:
                 pass
 
+    def prompt(self, is_short_switch: bool) -> list[ChatMessage]:
+        """The history, with the session language asked for when a short utterance came in another language."""
+        if is_short_switch:
+            system = self.messages[0].content + SHORT_UTTERANCE_NOTE.format(
+                language=self.language
+            )
+            return [ChatMessage(role="system", content=system), *self.messages[1:]]
+        else:
+            return self.messages
+
     def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
         if not text:
@@ -288,7 +307,18 @@ class Dialog(StreamComponent):
                 )
             else:
                 self.messages.append(ChatMessage(role="user", content=text))
-            if language is not None:
+            cjk_chars = sum("\u4e00" <= char <= "\u9fff" for char in text)
+            is_clear = (
+                cjk_chars >= MIN_LANGUAGE_CJK_CHARS
+                or len(text.split()) >= MIN_LANGUAGE_WORDS
+            )
+            is_short_switch = (
+                not is_clear
+                and language is not None
+                and self.language is not None
+                and language != self.language
+            )
+            if language is not None and is_clear:
                 self.language = language
             else:
                 pass
@@ -299,5 +329,5 @@ class Dialog(StreamComponent):
             self.heard_ms = None
             return [
                 control_chunk(TURN_STARTED, turn=turn),
-                messages_chunk(self.messages, turn, self.language),
+                messages_chunk(self.prompt(is_short_switch), turn, self.language),
             ]
