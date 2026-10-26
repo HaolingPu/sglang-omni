@@ -264,7 +264,6 @@ function renderHeard() {
   pending.className = "pending";
   pending.textContent = parts.pending;
   ui.caption.replaceChildren(heard, pending);
-  // A caption taller than its room scrolls so the line being heard and the one after it stay in view, from a line's top.
   // Before the server reports progress the whole reply counts as heard, so the caption stays at its start, where playback starts.
   const lineHeight = parseFloat(getComputedStyle(ui.caption).lineHeight);
   let heardBottom;
@@ -273,11 +272,14 @@ function renderHeard() {
   } else {
     heardBottom = 0;
   }
+  // The line after the heard one stays in view too, unless only two lines fit: then the heard line is the last one, clear of both fades.
+  const lookahead = ui.caption.clientHeight >= 3 * lineHeight ? lineHeight : 0;
+  const lineTop = Math.ceil((heardBottom + lookahead - ui.caption.clientHeight) / lineHeight) * lineHeight;
   const maxTop = ui.caption.scrollHeight - ui.caption.clientHeight;
-  const top = Math.min(Math.max(0, Math.ceil((heardBottom + lineHeight - ui.caption.clientHeight) / lineHeight) * lineHeight), maxTop);
-  ui.caption.scrollTo({ top, behavior: sameReply ? "smooth" : "instant" });
+  const top = Math.min(Math.max(0, lineTop), maxTop);
+  ui.caption.scrollTo({ top, behavior: sameReply ? "smooth" : "auto" });
   ui.caption.dataset.above = String(top > 0);
-  ui.caption.dataset.below = String(top < maxTop - 1);
+  ui.caption.dataset.below = String(lookahead > 0 && top < maxTop - 1);
 }
 
 function setSheet(open) {
@@ -563,10 +565,11 @@ try {
   if (saved) document.documentElement.dataset.theme = saved;
 } catch {}
 window.addEventListener("beforeunload", () => { if (session && isOpen()) session.close(); });
-window.addEventListener("resize", () => {
+// The caption's room changes with the window and with what the stage and the dock show around it.
+new ResizeObserver(() => {
   delete ui.caption.dataset.key;
   renderHeard();
-});
+}).observe(ui.caption);
 setInterval(tick, 250);
 setInterval(pollStatus, STATUS_POLL_MS);
 pollStatus();

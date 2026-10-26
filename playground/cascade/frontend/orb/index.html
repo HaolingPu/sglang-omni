@@ -74,11 +74,11 @@
     .orb::before { content: ""; position: absolute; inset: 0; border-radius: 50%; background: linear-gradient(180deg, #edf3f0 0 45%, #74b3ab 60%, #3f7f7e 100%); }
     .orb.has-gl::before { display: none; }
     .status-line { min-height: 1.3em; color: var(--muted); font-size: .9rem; text-align: center; }
-    /* The caption grows with the reply up to the room under the orb; app.js scrolls a longer one to the line being heard and fades the edges that hide text. */
     .caption {
       --above: 0em; --below: 0em;
       width: min(560px, 100%); min-height: 3.3em; margin: -12px 0 0; color: var(--text); font-size: 1.05rem; line-height: 1.65; text-align: center;
       overflow: hidden; transition: opacity 500ms ease;
+      -webkit-mask-image: linear-gradient(transparent, #000 var(--above), #000 calc(100% - var(--below)), transparent);
       mask-image: linear-gradient(transparent, #000 var(--above), #000 calc(100% - var(--below)), transparent);
     }
     .caption[data-above="true"] { --above: 1.2em; }
