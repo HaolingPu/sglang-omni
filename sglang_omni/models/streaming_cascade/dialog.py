@@ -62,13 +62,18 @@ CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user 
 
 
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
-    """The history as the model reads it: a reply the listener cut ends with … under a system note."""
+    """The history as the model reads it: a reply the listener cut ends with … under a system note, and only such a reply ends with …."""
     prompt: list[ChatMessage] = []
     has_cut = False
     for message in messages:
         if message.is_cut:
-            prompt.append(ChatMessage(role="assistant", content=f"{message.content}…"))
+            content = message.content.removesuffix("…")
+            prompt.append(ChatMessage(role="assistant", content=f"{content}…"))
             has_cut = True
+        elif message.role == "assistant":
+            # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
+            content = message.content.rstrip().removesuffix("…")
+            prompt.append(ChatMessage(role="assistant", content=content))
         else:
             prompt.append(message)
     if has_cut:

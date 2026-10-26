@@ -629,6 +629,27 @@ async def test_a_reply_interrupted_after_all_its_text_was_heard_is_still_marked_
 
 
 @pytest.mark.asyncio
+async def test_a_finished_reply_the_model_ends_with_an_ellipsis_does_not_read_as_cut():
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("question", True),
+            text_chunk("Rome was an empire,…", 1),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("and then?", True),
+        ],
+    )
+    assert dialog.messages[2].content == "Rome was an empire,…"
+    assert prompts(outputs)[-1] == [
+        ("system", dialog.config.system_prompt),
+        ("user", "question"),
+        ("assistant", "Rome was an empire,"),
+        ("user", "and then?"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_reply_that_finished_stays_whole_without_a_truncate():
     dialog = build({"kind": "dialog"})
     await drain(
