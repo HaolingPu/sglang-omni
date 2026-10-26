@@ -58,20 +58,22 @@ def heard_prefix(
 
 
 # note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
-INTERRUPTED_NOTE = " A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
+CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
 
 
 def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
     """The history as the model reads it: a reply the listener cut ends with … under a system note."""
     prompt: list[ChatMessage] = []
+    has_cut = False
     for message in messages:
-        if message.is_interrupted and message.content:
-            prompt.append(ChatMessage(role="assistant", content=message.content + "…"))
+        if message.is_cut:
+            prompt.append(ChatMessage(role="assistant", content=f"{message.content}…"))
+            has_cut = True
         else:
             prompt.append(message)
-    if any(message.is_interrupted and message.content for message in messages):
+    if has_cut:
         prompt[0] = ChatMessage(
-            role="system", content=prompt[0].content + INTERRUPTED_NOTE
+            role="system", content=f"{prompt[0].content} {CUT_REPLY_NOTE}"
         )
     else:
         pass
@@ -128,6 +130,8 @@ class Dialog(StreamComponent):
         self.truncatable: tuple[int, int] | None = None
         # Note (Junnan Li): The ended reply's full text, the reply audio the graph delivered (unknown, or all of it once the reply is done) and the last truncate's heard position, so progress that arrives later re-cuts it.
         self.truncatable_text = ""
+        # note (Haoling Pu): an interrupted reply was cut even when the listener heard all the text it had produced.
+        self.is_truncatable_interrupted = False
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
@@ -145,6 +149,7 @@ class Dialog(StreamComponent):
             self.progress = previous.progress
             self.truncatable = previous.truncatable
             self.truncatable_text = previous.truncatable_text
+            self.is_truncatable_interrupted = previous.is_truncatable_interrupted
             self.delivered_ms = previous.delivered_ms
             self.heard_ms = previous.heard_ms
             self.language = previous.language
@@ -207,6 +212,7 @@ class Dialog(StreamComponent):
             self.messages.append(ChatMessage(role="assistant", content=reply))
             self.truncatable = (self.reply_turn, len(self.messages) - 1)
             self.truncatable_text = reply
+            self.is_truncatable_interrupted = False
             self.delivered_ms = math.inf
             self.reply = None
         elif control_type(chunk) == SPEECH_STARTED:
@@ -235,6 +241,7 @@ class Dialog(StreamComponent):
         assert self.emit is not None and self.reply is not None
         turn = self.reply_turn
         self.truncatable_text = "".join(self.reply)
+        self.is_truncatable_interrupted = True
         self.messages.append(ChatMessage(role="assistant"))
         self.truncatable = (turn, len(self.messages) - 1)
         self.delivered_ms = None
@@ -277,11 +284,12 @@ class Dialog(StreamComponent):
                 uncertain,
                 len(self.progress),
             )
+            kept = content[:text_end].rstrip()
             self.messages[index] = ChatMessage(
                 role="assistant",
-                content=content[:text_end].rstrip(),
+                content=kept,
                 uncertain=uncertain,
-                is_interrupted=content[:text_end].rstrip() != content.rstrip(),
+                is_cut=self.is_truncatable_interrupted or kept != content.rstrip(),
             )
             if self.heard_ms is not None:
                 self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
