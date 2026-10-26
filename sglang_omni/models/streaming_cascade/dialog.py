@@ -63,6 +63,32 @@ MIN_LANGUAGE_CJK_CHARS = 3
 SHORT_UTTERANCE_NOTE = (
     " The user's last message is too short to tell their language; reply in {language}."
 )
+# note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
+CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
+
+
+def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
+    """The history as the model reads it: a reply the listener cut ends with … under a system note, and only such a reply ends with …."""
+    prompt: list[ChatMessage] = []
+    has_cut = False
+    for message in messages:
+        if message.is_cut:
+            content = message.content.removesuffix("…")
+            prompt.append(ChatMessage(role="assistant", content=f"{content}…"))
+            has_cut = True
+        elif message.role == "assistant":
+            # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
+            content = message.content.rstrip().removesuffix("…")
+            prompt.append(ChatMessage(role="assistant", content=content))
+        else:
+            prompt.append(message)
+    if has_cut:
+        prompt[0] = ChatMessage(
+            role="system", content=f"{prompt[0].content} {CUT_REPLY_NOTE}"
+        )
+    else:
+        pass
+    return prompt
 
 
 class DialogConfig(ComponentConfig):
@@ -85,14 +111,15 @@ class Dialog(StreamComponent):
     control and publishes `turn.interrupted`; `reply.progress` controls from
     the synthesizer tell it how much of the reply was spoken. The interrupted
     reply stays in the history only up to the last sentence whose audio the
-    graph delivered (`reply.delivered`), and a client `truncate` moves the
-    cut back to what the listener heard; from then on each cut is
-    published as reply.heard. A reply the history keeps nothing of when the
-    next reply begins leaves no entry, and the next utterance joins the user
-    message it followed. The language the recognizer heard in the last
-    utterance of at least 3 words or 3 Chinese characters is the Session's
-    language, and every messages chunk carries it; a shorter utterance in
-    another language leaves it, and that turn's prompt asks for a reply in it. A replacement adopts the history, the open reply and
+    graph delivered (`reply.delivered`), and a client `truncate` of that
+    reply's turn moves the cut back to what the listener heard; from then on
+    each cut is published as reply.heard. A reply the history keeps nothing
+    of when the next reply begins leaves no entry, and the next utterance
+    joins the user message it followed. The language the recognizer heard in
+    the last utterance of at least 3 words or 3 Chinese characters is the
+    Session's language, and every messages chunk carries it; a shorter
+    utterance in another language leaves it, and that turn's prompt asks for
+    a reply in it. A replacement adopts the history, the open reply and
     the waiting utterances, so new
     settings apply at once and reach the next prompt.
 
@@ -116,6 +143,8 @@ class Dialog(StreamComponent):
         self.truncatable: tuple[int, int] | None = None
         # Note (Junnan Li): The ended reply's full text, the reply audio the graph delivered (unknown, or all of it once the reply is done) and the last truncate's heard position, so progress that arrives later re-cuts it.
         self.truncatable_text = ""
+        # note (Haoling Pu): an interrupted reply was cut even when the listener heard all the text it had produced.
+        self.is_truncatable_interrupted = False
         self.delivered_ms: float | None = math.inf
         self.heard_ms: float | None = None
         self.language: str | None = None
@@ -133,6 +162,7 @@ class Dialog(StreamComponent):
             self.progress = previous.progress
             self.truncatable = previous.truncatable
             self.truncatable_text = previous.truncatable_text
+            self.is_truncatable_interrupted = previous.is_truncatable_interrupted
             self.delivered_ms = previous.delivered_ms
             self.heard_ms = previous.heard_ms
             self.language = previous.language
@@ -195,6 +225,7 @@ class Dialog(StreamComponent):
             self.messages.append(ChatMessage(role="assistant", content=reply))
             self.truncatable = (self.reply_turn, len(self.messages) - 1)
             self.truncatable_text = reply
+            self.is_truncatable_interrupted = False
             self.delivered_ms = math.inf
             self.reply = None
         elif control_type(chunk) == SPEECH_STARTED:
@@ -212,9 +243,19 @@ class Dialog(StreamComponent):
         ):
             self.delivered_ms = float(chunk.payload["audio_ms"])
             self.truncate()
-        elif control_type(chunk) == TRUNCATE and self.truncatable is not None:
-            self.heard_ms = float(chunk.payload["t_ms"])
-            self.truncate()
+        elif control_type(chunk) == TRUNCATE:
+            if self.truncatable is not None and chunk.turn in (
+                None,
+                self.truncatable[0],
+            ):
+                self.heard_ms = float(chunk.payload["t_ms"])
+                self.truncate()
+            else:
+                logger.info(
+                    "truncate of turn %s ignored: the reply that can still be cut is %s",
+                    chunk.turn,
+                    None if self.truncatable is None else self.truncatable[0],
+                )
         else:
             pass
 
@@ -223,6 +264,7 @@ class Dialog(StreamComponent):
         assert self.emit is not None and self.reply is not None
         turn = self.reply_turn
         self.truncatable_text = "".join(self.reply)
+        self.is_truncatable_interrupted = True
         self.messages.append(ChatMessage(role="assistant"))
         self.truncatable = (turn, len(self.messages) - 1)
         self.delivered_ms = None
@@ -265,10 +307,12 @@ class Dialog(StreamComponent):
                 uncertain,
                 len(self.progress),
             )
+            kept = content[:text_end].rstrip()
             self.messages[index] = ChatMessage(
                 role="assistant",
-                content=content[:text_end].rstrip(),
+                content=kept,
                 uncertain=uncertain,
+                is_cut=self.is_truncatable_interrupted or kept != content.rstrip(),
             )
             if self.heard_ms is not None:
                 self.emit(control_chunk(REPLY_HEARD, turn=turn, text_end=text_end))
@@ -276,14 +320,15 @@ class Dialog(StreamComponent):
                 pass
 
     def prompt(self, is_short_switch: bool) -> list[ChatMessage]:
-        """The history, with the session language asked for when a short utterance came in another language."""
+        """The history as the model reads it, with the session language asked for when a short utterance came in another language."""
+        messages = prompt_messages(self.messages)
         if is_short_switch:
-            system = self.messages[0].content + SHORT_UTTERANCE_NOTE.format(
+            system = messages[0].content + SHORT_UTTERANCE_NOTE.format(
                 language=self.language
             )
-            return [ChatMessage(role="system", content=system), *self.messages[1:]]
+            return [ChatMessage(role="system", content=system), *messages[1:]]
         else:
-            return self.messages
+            return messages
 
     def respond(self, turn: int, text: str, language: str | None) -> list[TimedChunk]:
         history_chars = sum(len(message.content) for message in self.messages)
