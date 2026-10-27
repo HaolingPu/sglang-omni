@@ -39,6 +39,9 @@ MARKDOWN_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
 UNSPOKEN_SYMBOLS = re.compile(
     "[\U0001f000-\U0001faff\u2600-\u27bf\u2b50\u2b55\ufe0e\ufe0f\u200d\u20e3*`]"
 )
+# A sentence's audio starts at its first sample above this level, less a pre-roll that keeps a soft onset whole.
+SPEECH_ONSET_LEVEL = 0.01
+SPEECH_PREROLL_S = 0.05
 
 
 def has_chinese_characters(sentence: str) -> bool:
@@ -213,17 +216,35 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 )
             else:
                 pass
+            preroll_samples = round(SPEECH_PREROLL_S * self.sample_rate_hz)
             carry = b""
+            quiet = np.zeros(0, dtype="<f4")
+            has_spoken = False
             async for data in response.aiter_bytes():
                 data = carry + data
                 usable = len(data) - len(data) % 2
                 carry = data[usable:]
-                if usable:
+                if not usable:
+                    pass
+                elif has_spoken:
                     yield np.frombuffer(data[:usable], dtype="<i2").astype(
                         "<f4"
                     ) / 32768
                 else:
-                    pass
+                    # Note (Haoling Pu): Qwen3-TTS Base cloning with the reference transcript opens each sentence with about 0.4 s of room tone, which the listener would wait through.
+                    audio = np.concatenate(
+                        [
+                            quiet,
+                            np.frombuffer(data[:usable], dtype="<i2").astype("<f4")
+                            / 32768,
+                        ]
+                    )
+                    loud = np.flatnonzero(np.abs(audio) > SPEECH_ONSET_LEVEL)
+                    if len(loud):
+                        has_spoken = True
+                        yield audio[max(0, int(loud[0]) - preroll_samples) :]
+                    else:
+                        quiet = audio[max(0, len(audio) - preroll_samples) :]
 
     async def speak_reply(
         self, deltas: AsyncIterator[TimedChunk], turn: int, emit: ChunkEmitter

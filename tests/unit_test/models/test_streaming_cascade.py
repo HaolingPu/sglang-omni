@@ -7,6 +7,7 @@ import io
 import json
 import re
 import wave
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from pathlib import Path
 
@@ -44,6 +45,7 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
+from sglang_omni.models.streaming_cascade.synthesizers import SPEECH_PREROLL_S
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
 from sglang_omni.proto.streams import (
@@ -1253,6 +1255,37 @@ async def test_openai_speech_reports_each_sentence_end_as_a_character_offset(bac
     assert [point["audio_ms"] for point in progress] == [
         sentence_ms * count for count in (1, 2, 3, 4)
     ]
+
+
+@pytest.mark.asyncio
+async def test_openai_speech_drops_the_quiet_start_of_a_sentence_except_a_preroll():
+    """A Qwen3-TTS Base clone given its reference transcript opened every sentence with about 0.4 s of room tone, so the listener heard each sentence that much later."""
+    rate = 24000
+    preroll = round(SPEECH_PREROLL_S * rate)
+    room_tone = np.full(3 * preroll, 33, dtype="<i2")
+    speech = np.full(preroll, 16384, dtype="<i2")
+    stream = np.concatenate([room_tone, speech]).tobytes()
+
+    async def odd_chunks() -> AsyncIterator[bytes]:
+        for start in range(0, len(stream), 1001):
+            yield stream[start : start + 1001]
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=odd_chunks(), headers={"X-Sample-Rate": str(rate)}
+        )
+
+    tts = build({"kind": "openai_speech", **HTTP_SERVICE})
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    outputs = await drain(
+        tts, [text_chunk("Hello there.", 1), control_chunk(TURN_DONE, turn=1)]
+    )
+    played = np.concatenate(
+        [np.frombuffer(o.payload, dtype="<f4") for o in outputs if o.modality == AUDIO]
+    )
+    assert (played * 32768).round().tolist() == [33] * preroll + [16384] * preroll
+    progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
+    assert progress[-1]["audio_ms"] == pytest.approx(2 * preroll * 1000 / rate)
 
 
 @pytest.mark.asyncio
