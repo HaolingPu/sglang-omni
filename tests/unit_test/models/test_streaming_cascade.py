@@ -2125,10 +2125,12 @@ async def spoken_languages(spec: dict, deltas: list[TimedChunk]) -> list[str]:
 async def test_openai_speech_keeps_the_digits_of_a_chinese_sentence_in_an_english_session():
     deltas = [
         text_chunk("This year is 2024. ", 1, "English"),
+        text_chunk("We said 谢谢 in 2024. ", 1, "English"),
         text_chunk("今年是2024年。", 1, "English"),
     ]
     assert await spoken_requests({"language": "auto"}, deltas) == [
         ("English", "This year is twenty twenty four."),
+        ("English", "We said 谢谢 in twenty twenty four."),
         ("Chinese", "今年是2024年。"),
     ]
 
@@ -2158,6 +2160,7 @@ async def test_openai_speech_auto_language_follows_the_user(
     [
         ("French", "Bonjour.", "French"),
         ("English", "你好。", "Chinese"),
+        ("English", "In Chinese, thank you is 谢谢.", "English"),
         ("English", "東京へ行きたいです。", "Japanese"),
         ("Chinese", "Hello there.", "English"),
         ("Chinese", "안녕하세요.", "Korean"),
