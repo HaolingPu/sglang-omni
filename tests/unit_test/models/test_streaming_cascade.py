@@ -2032,11 +2032,14 @@ async def test_a_short_utterance_in_another_language_keeps_the_session_language(
     ]
     note = SHORT_UTTERANCE_NOTE.format(language="English")
     assert [messages_of(o)[0].content for o in chunks] == [
-        dialog.config.system_prompt,
-        dialog.config.system_prompt,
-        f"{dialog.config.system_prompt} {note}",
-        dialog.config.system_prompt,
-        dialog.config.system_prompt,
+        dialog.config.system_prompt
+    ] * 5
+    assert [messages_of(o)[-1].content for o in chunks] == [
+        "Count to three.",
+        "Okay.",
+        f"嗯。\n\n[{note}]",
+        "我们换个话题吧。",
+        "ありがとうございました。",
     ]
     replacement = build({"kind": "dialog"})
     replacement.adopt(dialog)
@@ -2069,9 +2072,9 @@ def test_a_short_switch_after_a_cut_reply_adds_both_notes():
     ]
     note = SHORT_UTTERANCE_NOTE.format(language="English")
     _, chunk = dialog.respond(1, "嗯。", "Chinese")
-    assert messages_of(chunk)[0].content == (
-        f"{dialog.config.system_prompt} {CUT_REPLY_NOTE} {note}"
-    )
+    messages = messages_of(chunk)
+    assert messages[0].content == f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"
+    assert messages[-1].content == f"嗯。\n\n[{note}]"
 
 
 @pytest.mark.asyncio
