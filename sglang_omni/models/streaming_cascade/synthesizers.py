@@ -48,6 +48,7 @@ def has_chinese_characters(sentence: str) -> bool:
 CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
 KANA = re.compile("[\u3040-\u30ff]")
 HANGUL = re.compile("[\uac00-\ud7af]")
+LATIN_WORD = re.compile(r"[A-Za-z]+")
 
 
 class OpenAISpeechSynthesizerConfig(ComponentConfig):
@@ -162,9 +163,16 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
         else:
             script = ""
         # note (Haoling Pu): a sentence whose script contradicts the session language, as in a reply the user asked for in another language, is tagged by its script.
+        is_mostly_chinese = sum(
+            "\u4e00" <= char <= "\u9fff" for char in sentence
+        ) > len(LATIN_WORD.findall(sentence))
         is_switched = self.session_language is not None and (
             (script in ("Japanese", "Korean") and script != self.session_language)
-            or (script == "Chinese" and self.session_language not in CJK_LANGUAGES)
+            or (
+                script == "Chinese"
+                and self.session_language not in CJK_LANGUAGES
+                and is_mostly_chinese
+            )
             or (script == "English" and self.session_language in CJK_LANGUAGES)
         )
         if self.config.language == "auto" and is_switched:

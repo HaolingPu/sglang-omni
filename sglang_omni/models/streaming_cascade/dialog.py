@@ -62,9 +62,7 @@ def heard_prefix(
 MIN_LANGUAGE_WORDS = 3
 MIN_LANGUAGE_CJK_CHARS = 3
 CJK_CHAR = re.compile("[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
-SHORT_UTTERANCE_NOTE = (
-    "The user's last message is too short to tell their language; reply in {language}."
-)
+SHORT_UTTERANCE_NOTE = "Reply in {language}, the language of this conversation; the user's last message is too short to tell their language."
 # note (Haoling Pu): a cut reply shown as is reads to the model as how it answers, and after a few interruptions it replies with fragments (#3063).
 CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user interrupted it; answer the latest message in full."
 
@@ -121,10 +119,10 @@ class Dialog(StreamComponent):
     the last utterance of at least 3 words or 3 Chinese, Japanese or Korean
     characters is the Session's language, and every messages chunk carries
     it; a shorter utterance leaves it unchanged, and when the recognizer
-    heard another language in it, that turn's prompt asks for a reply in the
-    Session's language. A replacement adopts the history, the open reply and
-    the waiting utterances, so new settings apply at once and reach the next
-    prompt.
+    heard another language in it, that turn's latest user message asks for a
+    reply in the Session's language. A replacement adopts the history, the
+    open reply and the waiting utterances, so new settings apply at once and
+    reach the next prompt.
 
     Speech that started after an utterance ended and has not stopped when
     the utterance's reply begins is speech over that reply, so the reply
@@ -361,8 +359,8 @@ class Dialog(StreamComponent):
             prompt = prompt_messages(self.messages)
             if is_short_switch:
                 note = SHORT_UTTERANCE_NOTE.format(language=self.language)
-                prompt[0] = ChatMessage(
-                    role="system", content=f"{prompt[0].content} {note}"
+                prompt[-1] = ChatMessage(
+                    role="user", content=f"{prompt[-1].content}\n\n[{note}]"
                 )
             else:
                 pass
