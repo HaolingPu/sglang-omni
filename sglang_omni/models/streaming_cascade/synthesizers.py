@@ -231,7 +231,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 data = carry + data
                 usable = len(data) - len(data) % 2
                 carry = data[usable:]
-                samples = np.frombuffer(data[:usable], dtype="<i2").astype("<f4") / 32768
+                samples = (
+                    np.frombuffer(data[:usable], dtype="<i2").astype("<f4") / 32768
+                )
                 if not usable:
                     pass
                 elif has_spoken:
