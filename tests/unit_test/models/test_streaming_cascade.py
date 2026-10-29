@@ -1373,7 +1373,7 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
 
 @pytest.mark.asyncio
 async def test_openai_speech_pauses_between_sentences_and_counts_the_pause(backends):
-    """Sentences spoken one request each ran together, about 0.12 s apart against about 0.35 s when one request reads the whole reply."""
+    """One pause goes between two sentences, none before the first or after the last, and reply.progress counts it."""
     settings, _, spoken, _ = backends
     tts = settings.component_graph().node("tts").component.model_dump()
     outputs = await drain(
@@ -1386,9 +1386,7 @@ async def test_openai_speech_pauses_between_sentences_and_counts_the_pause(backe
     progress = [o.payload for o in outputs if control_type(o) == REPLY_PROGRESS]
     assert spoken == ["Hello world.", "Second one."]
     assert played.tolist() == [0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.5, -0.5]
-    assert [point["audio_ms"] for point in progress] == [
-        sample_count * 1000 / 24000 for sample_count in (3, 9)
-    ]
+    assert [point["audio_ms"] for point in progress] == [0.125, 0.375]
 
 
 @pytest.mark.asyncio
