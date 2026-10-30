@@ -67,6 +67,7 @@ from sglang_omni.proto.streams import (
     REPLY_DELIVERED,
     REPLY_HEARD,
     REPLY_PROGRESS,
+    REPLY_SENTENCE,
     SESSION_CONTROL,
     SPEECH_STARTED,
     SPEECH_STOPPED,
@@ -1360,7 +1361,9 @@ async def test_openai_speech_flushes_each_reply_before_turn_done(backends):
         control_chunk(TURN_DONE, turn=2),
     ]
     outputs = await drain(build({**tts, "max_sentence_words": 24}), inputs)
-    outputs = [o for o in outputs if control_type(o) != REPLY_PROGRESS]
+    outputs = [
+        o for o in outputs if control_type(o) not in (REPLY_PROGRESS, REPLY_SENTENCE)
+    ]
     assert spoken == ["Hello world.", "Second sentence here", "Again"]
     labels = [control_type(o) or o.format for o in outputs]
     runs = [label for i, label in enumerate(labels) if i == 0 or labels[i - 1] != label]
@@ -2032,14 +2035,8 @@ async def test_the_forced_method_keeps_the_sentence_end_when_the_worker_fails(fa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "language, sentence_languages",
-    [("Chinese", ["Chinese", "English"]), (None, [None, None])],
-)
-async def test_the_forced_method_aligns_each_sentence_in_the_language_it_is_spoken_in(
-    language, sentence_languages
-):
-    """In a Chinese session "The year is 2024." was aligned in Chinese, reading 2024 as 二千零二十四, while the speech service spoke it in English."""
+@pytest.mark.parametrize("language", ["Chinese", None])
+async def test_the_forced_method_sends_the_language_of_the_reply_deltas(language):
     bodies = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2049,16 +2046,49 @@ async def test_the_forced_method_aligns_each_sentence_in_the_language_it_is_spok
     await drain(
         await forced_aligner(handler),
         [
-            text_chunk("今年是2024年。", 1),
-            text_chunk(" The year is 2024.", 1, language),
+            text_chunk("One two three four.", 1),
+            text_chunk(" Five six.", 1, language),
             *(speech() for _ in range(4)),
-            control_chunk(REPLY_PROGRESS, turn=1, text_end=9, audio_ms=2000),
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=19, audio_ms=2000),
             *(speech() for _ in range(2)),
-            control_chunk(REPLY_PROGRESS, turn=1, text_end=27, audio_ms=3000),
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=29, audio_ms=3000),
         ],
     )
-    assert [body["text"] for body in bodies] == ["今年是2024年。", "The year is 2024."]
-    assert [body.get("language") for body in bodies] == sentence_languages
+    assert [body["text"] for body in bodies] == ["One two three four.", "Five six."]
+    if language is None:
+        assert all("language" not in body for body in bodies)
+    else:
+        assert [body["language"] for body in bodies] == [language, language]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "session_language, reply, languages",
+    [
+        ("Chinese", "今年是2024年。 The year is 2024.", ["Chinese", "English"]),
+        (None, "今年是2024年。 The year is 2024.", ["Chinese", "English"]),
+        (
+            "English",
+            "请看 https://example.com/a/very/long/path/name 这个网页的说明。",
+            ["Chinese"],
+        ),
+    ],
+)
+async def test_the_forced_method_aligns_each_sentence_in_the_language_the_synthesizer_spoke_it_in(
+    session_language, reply, languages
+):
+    """The worker aligned a sentence in another language than the speech service spoke it in: "The year is 2024." of a Chinese session in Chinese, reading 2024 as 二千零二十四, every sentence before the session language was known in none, and a Chinese sentence of an English session in English for the URL the speech service never read."""
+    deltas = [text_chunk(reply, 1, session_language)]
+    speech_requests, speech = await synthesized({"language": "auto"}, deltas)
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return worker_reply(request)
+
+    await drain(await forced_aligner(handler), [*deltas, *speech])
+    assert [body["language"] for body in speech_requests] == languages
+    assert [body.get("language") for body in bodies] == languages
 
 
 HEARD_ASR_URL = "http://asr:8002/v1"
@@ -2160,18 +2190,12 @@ async def test_the_asr_method_keeps_the_prefix_of_the_interrupted_sentence_its_d
         ("预算3.14元。", "预算三点一", "预算", "Chinese"),
         ("预算3.14元。", "预算三点一四元", "预算3.14元。", "Chinese"),
         ("Count 8 9 10.", "Count 八九十", "Count 8 9 10.", "English"),
-        (
-            "The year is 2024.",
-            "The year is twenty twenty four",
-            "The year is 2024.",
-            "Chinese",
-        ),
     ],
 )
 async def test_asr_normalization_preserves_complete_original_units(
     sentence: str, transcript: str, prefix: str, language: str
 ) -> None:
-    """Number expansion lost reply offsets, committed a number before its last word, or read an English sentence of a Chinese session as Chinese."""
+    """Number expansion lost reply offsets or committed a number before its last word."""
     earlier_text = "One two three four."
     outputs = await drain(
         await hearing_aligner("asr", transcribing(transcript, [])),
@@ -2185,6 +2209,38 @@ async def test_asr_normalization_preserves_complete_original_units(
         (len(earlier_text), 2000),
         (len(earlier_text) + 1 + len(prefix), 2600),
     ]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_in_the_first_request_of_a_long_sentence_is_heard_in_the_language_it_was_spoken_in():
+    """In a Chinese session the first request of a long sentence, English up to a Chinese clause, was spoken in English, but a cut inside it was transcribed in Chinese, the language of the whole sentence."""
+    deltas = [text_chunk("Please call me back tomorrow, 我们明天再聊。", 1, "Chinese")]
+    speech_requests, speech = await synthesized(
+        {"language": "auto", "max_sentence_words": 4}, deltas
+    )
+    first_request = speech[
+        : next(
+            index
+            for index, chunk in enumerate(speech)
+            if control_type(chunk) == REPLY_PROGRESS
+        )
+    ]
+    requests = []
+    outputs = await drain(
+        await hearing_aligner("asr", transcribing("Please call", requests)),
+        [
+            *deltas,
+            *first_request,
+            control_chunk(TURN_INTERRUPTED, turn=1),
+            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=500),
+        ],
+    )
+    assert [(body["input"], body["language"]) for body in speech_requests] == [
+        ("Please call me back", "English"),
+        ("tomorrow, 我们明天再聊。", "Chinese"),
+    ]
+    assert b'name="language"\r\n\r\nEnglish\r\n' in requests[0].content
+    assert spoken_progress(outputs) == [(11, 500)]
 
 
 @pytest.mark.asyncio
@@ -2479,21 +2535,29 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
     ]
 
 
-async def spoken_requests(
+async def synthesized(
     spec: dict, deltas: list[TimedChunk]
-) -> list[tuple[str, str]]:
-    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+) -> tuple[list[dict], list[TimedChunk]]:
+    """The speech requests and the outputs of a synthesizer speaking the deltas of turn 1, one second of audio per request."""
     bodies = []
 
     def answer(request: httpx.Request) -> httpx.Response:
         bodies.append(json.loads(request.content))
         return httpx.Response(
-            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+            200, content=b"\x00\x00" * 24000, headers={"X-Sample-Rate": "24000"}
         )
 
     tts = build({"kind": "openai_speech", **HTTP_SERVICE, **spec})
     tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
-    await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    outputs = await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    return bodies, outputs
+
+
+async def spoken_requests(
+    spec: dict, deltas: list[TimedChunk]
+) -> list[tuple[str, str]]:
+    """The language tag and the input of each sentence the synthesizer speaks for the deltas of turn 1."""
+    bodies, _ = await synthesized(spec, deltas)
     return [(body["language"], body["input"]) for body in bodies]
 
 
