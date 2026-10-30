@@ -2032,8 +2032,14 @@ async def test_the_forced_method_keeps_the_sentence_end_when_the_worker_fails(fa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("language", ["Chinese", None])
-async def test_the_forced_method_sends_the_language_of_the_reply_deltas(language):
+@pytest.mark.parametrize(
+    "language, sentence_languages",
+    [("Chinese", ["Chinese", "English"]), (None, [None, None])],
+)
+async def test_the_forced_method_aligns_each_sentence_in_the_language_it_is_spoken_in(
+    language, sentence_languages
+):
+    """In a Chinese session "The year is 2024." was aligned in Chinese, reading 2024 as 二千零二十四, while the speech service spoke it in English."""
     bodies = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -2043,19 +2049,16 @@ async def test_the_forced_method_sends_the_language_of_the_reply_deltas(language
     await drain(
         await forced_aligner(handler),
         [
-            text_chunk("One two three four.", 1),
-            text_chunk(" Five six.", 1, language),
+            text_chunk("今年是2024年。", 1),
+            text_chunk(" The year is 2024.", 1, language),
             *(speech() for _ in range(4)),
-            control_chunk(REPLY_PROGRESS, turn=1, text_end=19, audio_ms=2000),
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=9, audio_ms=2000),
             *(speech() for _ in range(2)),
-            control_chunk(REPLY_PROGRESS, turn=1, text_end=29, audio_ms=3000),
+            control_chunk(REPLY_PROGRESS, turn=1, text_end=27, audio_ms=3000),
         ],
     )
-    assert [body["text"] for body in bodies] == ["One two three four.", "Five six."]
-    if language is None:
-        assert all("language" not in body for body in bodies)
-    else:
-        assert [body["language"] for body in bodies] == [language, language]
+    assert [body["text"] for body in bodies] == ["今年是2024年。", "The year is 2024."]
+    assert [body.get("language") for body in bodies] == sentence_languages
 
 
 HEARD_ASR_URL = "http://asr:8002/v1"
@@ -2157,12 +2160,18 @@ async def test_the_asr_method_keeps_the_prefix_of_the_interrupted_sentence_its_d
         ("预算3.14元。", "预算三点一", "预算", "Chinese"),
         ("预算3.14元。", "预算三点一四元", "预算3.14元。", "Chinese"),
         ("Count 8 9 10.", "Count 八九十", "Count 8 9 10.", "English"),
+        (
+            "The year is 2024.",
+            "The year is twenty twenty four",
+            "The year is 2024.",
+            "Chinese",
+        ),
     ],
 )
 async def test_asr_normalization_preserves_complete_original_units(
     sentence: str, transcript: str, prefix: str, language: str
 ) -> None:
-    """Number expansion lost reply offsets or committed a number before its last word."""
+    """Number expansion lost reply offsets, committed a number before its last word, or read an English sentence of a Chinese session as Chinese."""
     earlier_text = "One two three four."
     outputs = await drain(
         await hearing_aligner("asr", transcribing(transcript, [])),
@@ -2532,6 +2541,8 @@ async def test_openai_speech_auto_language_follows_the_user(
         ("French", "Bonjour.", "French"),
         ("English", "你好。", "Chinese"),
         ("English", "In Chinese, thank you is 谢谢.", "English"),
+        ("English", "In Japanese, hello is こんにちは.", "English"),
+        ("English", "In Korean, hello is 안녕하세요.", "English"),
         ("English", "東京へ行きたいです。", "Japanese"),
         ("Chinese", "Hello there.", "English"),
         ("Chinese", "안녕하세요.", "Korean"),

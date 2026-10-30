@@ -19,9 +19,11 @@ from sglang_omni.models.streaming_cascade.base import (
     audio_chunk,
     bearer_headers,
     control_chunk,
+    has_chinese_characters,
     iterate,
     replying,
     sentences,
+    spoken_language,
 )
 from sglang_omni.models.streaming_cascade.numerals import spoken_text
 from sglang_omni.proto.session import TimedChunk
@@ -48,26 +50,16 @@ BARE_URL = re.compile(
 )
 
 
-def has_chinese_characters(sentence: str) -> bool:
-    return any("\u4e00" <= char <= "\u9fff" for char in sentence)
-
-
-CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
-KANA = re.compile("[\u3040-\u30ff]")
-HANGUL = re.compile("[\uac00-\ud7af]")
-LATIN_WORD = re.compile(r"[A-Za-z]+")
-
-
 class OpenAISpeechSynthesizerConfig(ComponentConfig):
     """Sentence-chunked `/v1/audio/speech` streaming PCM, one request per sentence.
 
     `language` is the service's language tag: empty leaves it to the
     service, `auto` follows the language the recognizer heard from the
-    user except in a sentence whose script contradicts it, which is tagged by
-    its script, and any other name tags every sentence without Chinese
-    characters. Without a known user language `auto` tags by script like
-    `English`. A sentence tagged English reaches the service with its numbers
-    read out as words.
+    user except in a sentence whose script contradicts it and carries most of
+    it, which is tagged by its script, and any other name tags every sentence
+    without Chinese characters. Without a known user language `auto` tags by
+    script like `English`. A sentence tagged English reaches the service with
+    its numbers read out as words.
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -159,33 +151,8 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
 
     def sentence_language(self, sentence: str) -> str:
         """The language tag of one sentence."""
-        if KANA.search(sentence):
-            script = "Japanese"
-        elif HANGUL.search(sentence):
-            script = "Korean"
-        elif has_chinese_characters(sentence):
-            script = "Chinese"
-        elif any(char.isascii() and char.isalpha() for char in sentence):
-            script = "English"
-        else:
-            script = ""
-        # note (Haoling Pu): a sentence whose script contradicts the session language, as in a reply the user asked for in another language, is tagged by its script.
-        is_mostly_chinese = sum(
-            "\u4e00" <= char <= "\u9fff" for char in sentence
-        ) > len(LATIN_WORD.findall(sentence))
-        is_switched = self.session_language is not None and (
-            (script in ("Japanese", "Korean") and script != self.session_language)
-            or (
-                script == "Chinese"
-                and self.session_language not in CJK_LANGUAGES
-                and is_mostly_chinese
-            )
-            or (script == "English" and self.session_language in CJK_LANGUAGES)
-        )
-        if self.config.language == "auto" and is_switched:
-            return script
-        elif self.config.language == "auto" and self.session_language is not None:
-            return self.session_language
+        if self.config.language == "auto" and self.session_language is not None:
+            return spoken_language(sentence, self.session_language)
         elif has_chinese_characters(sentence):
             # Note (Junnan Li): A sentence with CJK characters is spoken as Chinese whatever the configured language, so a reply in the user's language keeps the right tag.
             return "Chinese"

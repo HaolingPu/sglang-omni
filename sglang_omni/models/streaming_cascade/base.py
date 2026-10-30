@@ -43,6 +43,12 @@ SENTENCE_END = re.compile(r"[.!?;。！？；…]+[\"')\]”’」』）]*$")
 CJK_SENTENCE_END = re.compile(r"[。！？；…]+[\"')\]”’」』）]*(?=\S)")
 # note (luojiaxuan): A word ending in a comma, colon or dash ends a clause, where a sentence too long for one speech request is cut when the cut may fall there.
 CLAUSE_END = re.compile(r"[,:，、：—–]+[\"')\]”’」』）]*$")
+CJK_LANGUAGES = frozenset({"Chinese", "Cantonese", "Japanese", "Korean"})
+KANA = re.compile("[\u3040-\u30ff]")
+HANGUL = re.compile("[\uac00-\ud7af]")
+CJK_CHARACTER = re.compile("[\u3040-\u30ff\u4e00-\u9fff\uac00-\ud7af]")
+LATIN_WORD = re.compile(r"[A-Za-z]+")
+LATIN_VOWELS = re.compile("[aeiouy]+", re.IGNORECASE)
 
 
 class StreamComponent:
@@ -107,6 +113,43 @@ def with_language(
         return payload
     else:
         return {**payload, "language": language}
+
+
+def has_chinese_characters(sentence: str) -> bool:
+    return any("\u4e00" <= char <= "\u9fff" for char in sentence)
+
+
+def spoken_language(sentence: str, session_language: str) -> str:
+    """The language a sentence is spoken in within a session in session_language: its script's when the script contradicts the session and carries most of the sentence, as in a reply the user asked for in another language, and the session's otherwise."""
+    if KANA.search(sentence):
+        script = "Japanese"
+    elif HANGUL.search(sentence):
+        script = "Korean"
+    elif has_chinese_characters(sentence):
+        script = "Chinese"
+    elif any(char.isascii() and char.isalpha() for char in sentence):
+        script = "English"
+    else:
+        script = ""
+    # note (Haoling Pu): a CJK character is about one syllable, so it is weighed against the vowel groups of the Latin words; against their word count the five kana of "In Japanese, hello is こんにちは." outweighed its four words.
+    latin_syllable_count = sum(
+        max(len(LATIN_VOWELS.findall(word)), 1) for word in LATIN_WORD.findall(sentence)
+    )
+    is_mostly_cjk = len(CJK_CHARACTER.findall(sentence)) > latin_syllable_count
+    if (
+        script in ("Japanese", "Korean")
+        and script != session_language
+        and is_mostly_cjk
+    ):
+        return script
+    elif (
+        script == "Chinese" and session_language not in CJK_LANGUAGES and is_mostly_cjk
+    ):
+        return script
+    elif script == "English" and session_language in CJK_LANGUAGES:
+        return script
+    else:
+        return session_language
 
 
 def transcript_chunk(

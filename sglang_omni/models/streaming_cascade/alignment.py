@@ -26,8 +26,10 @@ from sglang_omni.models.streaming_cascade.base import (
     ComponentConfig,
     StreamComponent,
     control_chunk,
+    first_sentence_end,
     iterate,
     probe_models,
+    spoken_language,
     stop_running,
     with_language,
 )
@@ -167,7 +169,7 @@ async def probe_alignment_worker(config: AlignmentConfig) -> None:
 
 @dataclass(frozen=True)
 class SentenceAudio:
-    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the reply's, None while unknown."""
+    """A spoken sentence of `turn` for the forced aligner: `text` begins at character `start` of the reply and its audio at `start_ms`; `language` is the one it is spoken in, None while the reply's is unknown."""
 
     turn: int
     text: str
@@ -339,7 +341,11 @@ class Alignment(StreamComponent):
                 reply.start + len(span) - len(span.lstrip()),
                 reply.start_ms,
                 np.concatenate(reply.samples),
-                reply.language,
+                (
+                    None
+                    if reply.language is None
+                    else spoken_language(text, reply.language)
+                ),
             )
             if self.config.method == "forced":
                 sentences.put_nowait(sentence)
@@ -545,21 +551,27 @@ def heard_audio(reply: SpokenReply, cut_ms: float) -> HeardAudio | None:
     ]
     if ended:
         sentence = ended[0]
-        text, start, start_ms, samples = (
+        text, start, start_ms, samples, language = (
             sentence.text,
             sentence.start,
             sentence.start_ms,
             sentence.samples,
+            sentence.language,
         )
     elif reply.samples and cut_ms > reply.start_ms:
         span = reply.text[reply.start :]
         text = span.strip()
         start = reply.start + len(span) - len(span.lstrip())
         start_ms, samples = reply.start_ms, np.concatenate(reply.samples)
+        language = (
+            None
+            if reply.language is None
+            else spoken_language(text[: first_sentence_end(text, True)], reply.language)
+        )
     else:
         return None
     cut = samples[: round((cut_ms - start_ms) * SPEECH_SAMPLE_RATE_HZ / 1000)]
     if text and len(cut):
-        return HeardAudio(reply.turn, text, start, cut_ms, cut, reply.language)
+        return HeardAudio(reply.turn, text, start, cut_ms, cut, language)
     else:
         return None
