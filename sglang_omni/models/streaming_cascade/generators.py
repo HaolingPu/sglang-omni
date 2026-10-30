@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """Generator kinds: reply text from the conversation."""
 
+import re
 from collections.abc import AsyncIterator
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import httpx
 from pydantic import BaseModel, Field, field_validator
@@ -20,9 +21,17 @@ from sglang_omni.models.streaming_cascade.base import (
     replying,
     text_chunk,
 )
+from sglang_omni.models.streaming_cascade.synthesizers import (
+    OpenAISpeechSynthesizerConfig,
+)
 from sglang_omni.proto.session import TimedChunk
-from sglang_omni.proto.streams import MESSAGES, TURN_DONE, chunk_language
+from sglang_omni.proto.streams import MESSAGES, TEXT_DELTA, TURN_DONE, chunk_language
 from sglang_omni.scheduling.session import ChunkEmitter
+
+if TYPE_CHECKING:
+    from sglang_omni.models.streaming_cascade.config import ComponentGraphConfig
+else:
+    pass
 
 # The request fields this kind sets itself; `extra_body` adds others.
 CHAT_REQUEST_FIELDS = frozenset(
@@ -65,13 +74,29 @@ class ChatEvent(BaseModel):
 
 
 class OpenAIChatGenerator(Replier):
-    """One streamed completion per messages chunk, closed by turn.done; the deltas carry the messages chunk's language."""
+    """One streamed completion per messages chunk, closed by turn.done; the deltas carry the messages chunk's language.
+
+    A tag such as `[calm]` naming a style of a synthesizer that reads the
+    deltas leaves the reply text, and the deltas after it carry that style.
+    """
 
     def __init__(self, config: OpenAIChatGeneratorConfig) -> None:
         super().__init__()
         self.config = config
         self.client = httpx.AsyncClient(
             timeout=config.timeout_s, headers=bearer_headers(config.api_key_env)
+        )
+        self.styles: list[str] = []
+
+    def place(self, settings: "ComponentGraphConfig", name: str) -> None:
+        self.styles = sorted(
+            {
+                style
+                for node in settings.nodes
+                if isinstance(node.component, OpenAISpeechSynthesizerConfig)
+                and TEXT_DELTA in node.edges().get(name, frozenset())
+                for style in node.component.styles
+            }
         )
 
     async def process(
@@ -99,12 +124,40 @@ class OpenAIChatGenerator(Replier):
         language: str | None,
         emit: ChunkEmitter,
     ) -> None:
-        """Stream the reply's text deltas, each carrying the user's language for the synthesizer."""
+        """Stream the reply's text deltas, each carrying the user's language and the style the last tag named for the synthesizer."""
+        style_tag = re.compile(r"\[(" + "|".join(map(re.escape, self.styles)) + r")\]")
+        style: str | None = None
+        held = ""
+        is_after_tag = False
         async for delta in self.complete(messages):
-            if delta.content:
-                emit(text_chunk(delta.content, turn, language))
+            received = held + (delta.content or "")
+            tag_start = received.rfind("[")
+            if tag_start >= 0 and any(
+                f"[{name}]".startswith(received[tag_start:])
+                and f"[{name}]" != received[tag_start:]
+                for name in self.styles
+            ):
+                received, held = received[:tag_start], received[tag_start:]
             else:
-                pass
+                held = ""
+            pieces = style_tag.split(received) if self.styles else [received]
+            for index, piece in enumerate(pieces):
+                if index % 2 == 1:
+                    style = piece
+                    is_after_tag = True
+                elif is_after_tag and not piece.strip():
+                    pass
+                elif is_after_tag:
+                    emit(text_chunk(piece.lstrip(), turn, language, style))
+                    is_after_tag = False
+                elif piece:
+                    emit(text_chunk(piece, turn, language, style))
+                else:
+                    pass
+        if held:
+            emit(text_chunk(held, turn, language, style))
+        else:
+            pass
         emit(control_chunk(TURN_DONE, turn=turn))
 
     def request_body(self, messages: list[ChatMessage]) -> dict[str, object]:

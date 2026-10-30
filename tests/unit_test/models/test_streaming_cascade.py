@@ -97,6 +97,7 @@ PROFILE_NAMES = (
     "nemotron-stage-qwen3-tts",
     "qwen3-asr-qwen3-tts-vivian",
     "qwen3-asr-qwen3.8-27b-vivian",
+    "qwen3-asr-qwen3.8-27b-vivian-styles",
     "qwen3-asr-streaming-qwen3-tts-vivian",
 )
 HTTP_PROFILE = PROFILES / "nemotron-qwen3-tts" / "launch.yaml"
@@ -2416,6 +2417,70 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
         (2, {"text": "1, "}),
         (2, {"text": "2."}),
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("profile", "reply", "recordings"),
+    [
+        pytest.param(
+            "qwen3-asr-qwen3.8-27b-vivian-styles",
+            "Great news! Take a breath. [soon] stays calm. [ca",
+            [
+                "vivian_cheerful.wav",
+                "vivian_calm.wav",
+                "vivian_calm.wav",
+                "vivian_calm.wav",
+            ],
+            id="styles",
+        ),
+        pytest.param(
+            "qwen3-asr-qwen3.8-27b-vivian",
+            "[cheerful] Great news! [calm] Take a breath. [soon] stays calm. [ca",
+            ["vivian.wav"] * 4,
+            id="no_styles",
+        ),
+    ],
+)
+async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_sentences_after_it(
+    profile, reply, recordings
+):
+    """A tag naming a style of the synthesizer, even split across deltas, is not in the reply text the client, aligner and history read, and each sentence from it on clones that style's recording; a profile without styles keeps every tag as the model wrote it."""
+    graph = profile_config(profile).component_graph()
+    generator = build(graph.node("llm").component.model_dump())
+    generator.place(graph, "llm")
+
+    async def complete(messages):
+        for content in (
+            "[che",
+            "erful]",
+            " Great news",
+            "! [calm] Take",
+            " a breath. [soon] stays",
+            " calm. [ca",
+        ):
+            yield ChatDelta(content=content)
+
+    generator.complete = complete
+    outputs = await drain(
+        generator, [messages_chunk([ChatMessage(role="user", content="hi")], 1)]
+    )
+    deltas = [o for o in outputs if o.format == TEXT_DELTA]
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+        )
+
+    tts = build(graph.node("tts").component.model_dump())
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    await drain(tts, [*deltas, control_chunk(TURN_DONE, turn=1)])
+    assert "".join(o.payload["text"] for o in deltas) == reply
+    assert [
+        Path(body["references"][0]["audio_path"]).name for body in bodies
+    ] == recordings
 
 
 async def spoken_requests(

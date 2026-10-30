@@ -122,13 +122,16 @@ def transcript_chunk(
     )
 
 
-def text_chunk(text: str, turn: int, language: str | None = None) -> TimedChunk:
+def text_chunk(
+    text: str, turn: int, language: str | None = None, style: str | None = None
+) -> TimedChunk:
+    payload = with_language({"text": text}, language)
     return TimedChunk(
         TEXT,
         0,
         0,
         0,
-        with_language({"text": text}, language),
+        payload if style is None else {**payload, "style": style},
         format=TEXT_DELTA,
         turn=turn,
     )
