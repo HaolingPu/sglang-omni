@@ -2212,35 +2212,58 @@ async def test_asr_normalization_preserves_complete_original_units(
 
 
 @pytest.mark.asyncio
-async def test_a_cut_in_the_first_request_of_a_long_sentence_is_heard_in_the_language_it_was_spoken_in():
+@pytest.mark.parametrize(
+    "requests_heard, cuts, languages, progress",
+    [
+        (
+            1,
+            [control_chunk(REPLY_DELIVERED, turn=1, audio_ms=500)],
+            ["English"],
+            [(11, 500)],
+        ),
+        (
+            2,
+            [
+                control_chunk(REPLY_DELIVERED, turn=1, audio_ms=1500),
+                control_chunk(TRUNCATE, t_ms=500),
+            ],
+            ["Chinese", "English"],
+            [(19, 1000), (11, 500)],
+        ),
+    ],
+)
+async def test_a_cut_in_a_long_sentence_is_heard_in_the_language_its_request_was_spoken_in(
+    requests_heard, cuts, languages, progress
+):
     """In a Chinese session the first request of a long sentence, English up to a Chinese clause, was spoken in English, but a cut inside it was transcribed in Chinese, the language of the whole sentence."""
     deltas = [text_chunk("Please call me back tomorrow, 我们明天再聊。", 1, "Chinese")]
     speech_requests, speech = await synthesized(
         {"language": "auto", "max_sentence_words": 4}, deltas
     )
-    first_request = speech[
-        : next(
-            index
-            for index, chunk in enumerate(speech)
-            if control_type(chunk) == REPLY_PROGRESS
-        )
+    request_ends = [
+        index
+        for index, chunk in enumerate(speech)
+        if control_type(chunk) == REPLY_PROGRESS
     ]
     requests = []
     outputs = await drain(
         await hearing_aligner("asr", transcribing("Please call", requests)),
         [
             *deltas,
-            *first_request,
+            *speech[: request_ends[requests_heard - 1]],
             control_chunk(TURN_INTERRUPTED, turn=1),
-            control_chunk(REPLY_DELIVERED, turn=1, audio_ms=500),
+            *cuts,
         ],
     )
     assert [(body["input"], body["language"]) for body in speech_requests] == [
         ("Please call me back", "English"),
         ("tomorrow, 我们明天再聊。", "Chinese"),
     ]
-    assert b'name="language"\r\n\r\nEnglish\r\n' in requests[0].content
-    assert spoken_progress(outputs) == [(11, 500)]
+    assert [
+        re.search(rb'name="language"\r\n\r\n(\w+)', request.content).group(1).decode()
+        for request in requests
+    ] == languages
+    assert spoken_progress(outputs) == progress
 
 
 @pytest.mark.asyncio
