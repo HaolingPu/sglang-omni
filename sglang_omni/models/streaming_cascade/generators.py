@@ -125,7 +125,11 @@ class OpenAIChatGenerator(Replier):
         emit: ChunkEmitter,
     ) -> None:
         """Stream the reply's text deltas, each carrying the user's language and the style the last tag named for the synthesizer."""
-        style_tag = re.compile(r"\[(" + "|".join(map(re.escape, self.styles)) + r")\]")
+        # note (Haoling Pu): Qwen3.8-27B wrote [Sympathetic] in 6 of 740 replies, which a case-sensitive match left in the text and the speech service spoke.
+        style_names = {name.lower(): name for name in self.styles}
+        style_tag = re.compile(
+            r"\[(" + "|".join(map(re.escape, self.styles)) + r")\]", re.IGNORECASE
+        )
         style: str | None = None
         held = ""
         is_after_tag = False
@@ -133,9 +137,9 @@ class OpenAIChatGenerator(Replier):
             received = held + (delta.content or "")
             tag_start = received.rfind("[")
             if tag_start >= 0 and any(
-                f"[{name}]".startswith(received[tag_start:])
-                and f"[{name}]" != received[tag_start:]
-                for name in self.styles
+                f"[{name}]".startswith(received[tag_start:].lower())
+                and f"[{name}]" != received[tag_start:].lower()
+                for name in style_names
             ):
                 received, held = received[:tag_start], received[tag_start:]
             else:
@@ -143,7 +147,7 @@ class OpenAIChatGenerator(Replier):
             pieces = style_tag.split(received) if self.styles else [received]
             for index, piece in enumerate(pieces):
                 if index % 2 == 1:
-                    style = piece
+                    style = style_names[piece.lower()]
                     is_after_tag = True
                 elif is_after_tag and not piece.strip():
                     pass

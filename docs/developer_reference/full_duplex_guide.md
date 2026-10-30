@@ -401,14 +401,14 @@ A client selects the behaviour per session with the standard field, `{"turn_dete
 **Speaking Styles**
 
 
-The `qwen3-asr-qwen3.8-27b-vivian-styles` profile lets the language model choose how a reply sounds while the voice stays Vivian. Its system prompt asks Qwen3.8-27B to start a reply with `[cheerful]`, `[excited]`, `[sympathetic]` or `[calm]` when one fits. The `llm` node leaves the tag out of the reply text, and the `tts` node clones the Vivian recording of that style, with its transcript, for the sentences after it ([`openai_chat`](#openai_chat), [`openai_speech`](#openai_speech)). An untagged reply clones `voices/vivian.wav` with its transcript. Each style recording is the CustomVoice speaker Vivian reading a sentence of that style with a matching instruction; [`voices/README.md`](../../examples/streaming_cascade/voices/README.md) gives the requests that regenerate them.
+The `qwen3-asr-qwen3.8-27b-vivian-styles` profile lets the language model choose how a reply sounds while the voice stays Vivian. Its system prompt asks Qwen3.8-27B to start a reply with `[cheerful]`, `[excited]`, `[sympathetic]` or `[calm]` when the user's message carries a feeling, and with no tag for a plain question or request. The `llm` node leaves the tag out of the reply text, and the `tts` node clones the Vivian recording of that style, with its transcript, for the sentences after it ([`openai_chat`](#openai_chat), [`openai_speech`](#openai_speech)). An untagged reply clones `voices/vivian.wav` with its transcript. The `dialog` node puts each reply's tags back into the prompts after it ([`dialog`](#dialog)): without them the model saw untagged replies of its own and stopped tagging after a few turns. Each style recording is the CustomVoice speaker Vivian reading a sentence of that style with a matching instruction; [`voices/README.md`](../../examples/streaming_cascade/voices/README.md) gives the requests that regenerate them.
 
 Qwen3-TTS Base ignores instructions and copies the timbre, pitch and pace of the recording it continues, so a style is only as strong as its recording. Over 60 English and 60 Chinese sentences per style, against the same sentences cloned from `vivian.wav`: excited speaks about 2.4 semitones higher, cheerful 1 to 2 higher, calm at 0.85 to 0.9 times the pace, and sympathetic barely slower and 1 to 2.5 semitones higher, closer to warm than to sad. Excited moves the timbre furthest from `vivian.wav`.
 
 - Only the styles in `styles` exist, with no strength between them; a new style needs its own recording and transcript.
 - Every sentence clones with a transcript, so it opens with the pause of about half a second described under [`openai_speech`](#openai_speech).
-- The tags come only from the system prompt. Instructions a client sets in `session.update` replace it, so they must ask for the tags too, or every reply is untagged. The history keeps each reply without its tag, so the model does not see the tags it wrote before.
-- A tag in another form, such as `[Calm]` or `(calm)`, is spoken as text.
+- The tags come only from the system prompt. Instructions a client sets in `session.update` replace it, so they must ask for the tags too, or every reply is untagged.
+- A tag in another form, such as `(calm)`, or a bracketed word that names no style, such as `[casual]`, is spoken as text.
 
 (scripted-conversation)=
 
@@ -610,7 +610,7 @@ Turns the running text of the `asr` stage into utterances: partial transcripts w
 **`dialog`**
 
 
-Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard.
+Keeps the conversation history, opens a turn for each final transcript and sends the history to the language model. An utterance that arrives during a reply waits for it to end; after an interruption it also waits until the audio the graph delivered (`reply.delivered`) or the client's truncate says how much of the reply the history keeps. Speech that starts during a reply interrupts it, and so does speech that started after the utterance ended and has not stopped when the reply begins, so that reply ends before any of it is heard. A reply whose deltas carry a style ([speaking styles](#speaking-styles)) shows the language model, in later prompts, the tag `[style]` before the first text of each style the history keeps of it; the client and the cut offsets see only the reply text.
 
 | Option | Type | Default | Effect |
 | --- | --- | --- | --- |
@@ -635,7 +635,7 @@ Streams one chat completion from `<base_url>/chat/completions` per turn.
 | `api_key_env` | string | `OPENAI_API_KEY` | As above. |
 | `timeout_s` | number > 0 | `120` | The request timeout. |
 
-A tag `[name]` naming one of the `styles` of an `openai_speech` node that reads the deltas is left out of the reply text, together with the spacing after it, so the client, the aligner and the history never see it, and the deltas after it carry that style until the next tag. A tag split across deltas is held until it is complete, and text that only began like a tag is sent once it is not one or the reply ends. A bracketed word that names no style stays in the text.
+A tag `[name]` naming one of the `styles` of an `openai_speech` node that reads the deltas, in any letter case, is left out of the reply text, together with the spacing after it, so the client and the aligner never see it, and the deltas after it carry that style until the next tag; the [`dialog`](#dialog) puts the tag back only in the prompts it sends the model. A tag split across deltas is held until it is complete, and text that only began like a tag is sent once it is not one or the reply ends. A bracketed word that names no style stays in the text.
 
 (openai_speech)=
 

@@ -858,6 +858,51 @@ async def test_a_finished_reply_the_model_ends_with_an_ellipsis_does_not_read_as
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("heard_ms", "cut_reply"),
+    [
+        (1000, "That is normal.…"),
+        (2000, "That is normal. [calm] Breathe slowly.…"),
+    ],
+)
+async def test_the_prompt_puts_back_the_style_tags_of_the_reply_the_history_keeps(
+    heard_ms, cut_reply
+):
+    """The history keeps each reply's text, and the prompts after it show the tag before the first text of each style; a style whose text the cut dropped shows no tag."""
+    dialog = build({"kind": "dialog"})
+    outputs = await drain(
+        dialog,
+        [
+            transcript_chunk("I passed!", True),
+            text_chunk("Great news! ", 1, style="cheerful"),
+            text_chunk("Well done.", 1, style="cheerful"),
+            control_chunk(TURN_DONE, turn=1),
+            transcript_chunk("But I feel nervous.", True),
+            text_chunk("That is normal. ", 2),
+            text_chunk("Breathe slowly.", 2, style="calm"),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=2, text_end=16, audio_ms=1000)
+            ),
+            lambda: dialog.control(
+                control_chunk(REPLY_PROGRESS, turn=2, text_end=31, audio_ms=2000)
+            ),
+            control_chunk(SPEECH_STARTED),
+            control_chunk(TRUNCATE, t_ms=heard_ms),
+            transcript_chunk("Thanks.", True),
+        ],
+    )
+    assert dialog.messages[2].content == "Great news! Well done."
+    assert prompts(outputs)[-1] == [
+        ("system", f"{dialog.config.system_prompt} {CUT_REPLY_NOTE}"),
+        ("user", "I passed!"),
+        ("assistant", "[cheerful] Great news! Well done."),
+        ("user", "But I feel nervous."),
+        ("assistant", cut_reply),
+        ("user", "Thanks."),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_a_reply_that_finished_stays_whole_without_a_truncate():
     dialog = build({"kind": "dialog"})
     await drain(
@@ -2436,7 +2481,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
         ),
         pytest.param(
             "qwen3-asr-qwen3.8-27b-vivian",
-            "[cheerful] Great news! [calm] Take a breath. [soon] stays calm. [ca",
+            "[Cheerful] Great news! [calm] Take a breath. [soon] stays calm. [ca",
             ["vivian.wav"] * 4,
             id="no_styles",
         ),
@@ -2445,14 +2490,14 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
 async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_sentences_after_it(
     profile, reply, recordings
 ):
-    """A tag naming a style of the synthesizer, even split across deltas, is not in the reply text the client, aligner and history read, and each sentence from it on clones that style's recording; a profile without styles keeps every tag as the model wrote it."""
+    """A tag naming a style of the synthesizer, in any letter case and even split across deltas, is not in the reply text the client, aligner and history read, and each sentence from it on clones that style's recording; a profile without styles keeps every tag as the model wrote it."""
     graph = profile_config(profile).component_graph()
     generator = build(graph.node("llm").component.model_dump())
     generator.place(graph, "llm")
 
     async def complete(messages):
         for content in (
-            "[che",
+            "[Che",
             "erful]",
             " Great news",
             "! [calm] Take",
