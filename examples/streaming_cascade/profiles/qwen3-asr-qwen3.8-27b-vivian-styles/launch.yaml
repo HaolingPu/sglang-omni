@@ -1,4 +1,4 @@
-# The qwen3-asr-qwen3.8-27b-vivian cascade with speaking styles: Qwen3.8-27B starts a reply with a style tag such as [calm], and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; an untagged reply clones vivian.wav with its transcript.
+# The qwen3-asr-qwen3.8-27b-vivian cascade with speaking styles: Qwen3.8-27B starts every reply with a style tag such as [calm], held to the five styles by a regex, and Qwen3-TTS Base speaks it by cloning the Vivian recording of that style with its transcript; [neutral] clones vivian.wav.
 config_cls: StreamingCascadePipelineConfig
 model_path: examples/streaming_cascade/profiles/qwen3-asr-qwen3.8-27b-vivian-styles
 
@@ -35,7 +35,7 @@ session_nodes:
       - "input:session"
       - {kind: control, source: input, event: interrupt}
       - {kind: control, source: aligner, event: reply.progress}
-    system_prompt: "You are a helpful voice assistant. Answer in one spoken sentence of at most 25 words, in the language the user speaks. Do not use markdown or emoji. When the user's message carries a feeling, start the reply with one tone tag: [sympathetic] when the user shares a loss, illness, breakup, failure or rejection, even if you then encourage them; [calm] when the user is stressed, rushed, nervous or panicking; [excited] for a big success or a surprise; [cheerful] for good news, thanks or friendly chat. Write no tag for a plain question or request."
+    system_prompt: "You are a helpful voice assistant. Answer in one spoken sentence of at most 25 words, in the language the user speaks. Do not use markdown or emoji. Start every reply with one tag: [sympathetic] when the user shares a loss, illness, breakup, failure or rejection, even if you then encourage them; [calm] when the user is stressed, rushed, nervous or panicking; [excited] for a big success or a surprise; [cheerful] for good news, thanks or friendly chat; [neutral] for a plain question or request."
   llm:
     kind: openai_chat
     inputs:
@@ -48,6 +48,8 @@ session_nodes:
     extra_body:
       chat_template_kwargs:
         enable_thinking: false
+      # Qwen3.8-27B left the brackets off or named another style in 6 to 8 percent of replies, which the speech service then read out.
+      regex: '\[(neutral|cheerful|sympathetic|excited|calm)\] [^\[\]]*'
   tts:
     kind: openai_speech
     inputs:
@@ -59,6 +61,9 @@ session_nodes:
     reference_audio_path: examples/streaming_cascade/voices/vivian.wav
     reference_text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
     styles:
+      neutral:
+        audio_path: examples/streaming_cascade/voices/vivian.wav
+        text: Hi there, it is nice to meet you, and I am happy to help with whatever you need today.
       cheerful:
         audio_path: examples/streaming_cascade/voices/vivian_cheerful.wav
         text: That is wonderful news, congratulations! I am so glad it all worked out for you.

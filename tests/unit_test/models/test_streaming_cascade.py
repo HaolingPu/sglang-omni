@@ -2528,6 +2528,18 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
     ] == recordings
 
 
+def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
+    """The regex the language model decodes under names exactly the speech node's styles and makes a reply start with one in brackets."""
+    graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
+    regex = str(graph.node("llm").component.extra_body["regex"])
+    assert set(re.search(r"\(([a-z|]+)\)", regex).group(1).split("|")) == set(
+        graph.node("tts").component.styles
+    )
+    assert re.fullmatch(regex, "[calm] Take a slow breath.")
+    assert not re.fullmatch(regex, "calm Take a slow breath.")
+    assert not re.fullmatch(regex, "[calm] Take a [slow] breath.")
+
+
 async def spoken_requests(
     spec: dict, deltas: list[TimedChunk]
 ) -> list[tuple[str, str]]:
