@@ -30,6 +30,7 @@ from sglang_omni.proto.streams import (
     TEXT_DELTA,
     TURN_DONE,
     chunk_language,
+    chunk_style,
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
@@ -70,8 +71,9 @@ class OpenAISpeechSynthesizerConfig(ComponentConfig):
     Without a known user language `auto` tags by script like `English`.
     A sentence tagged English, with no Chinese characters, reaches the
     service with its numbers read out as words.
-    `styles` maps a style name to the recording a sentence of that style
-    clones; the language model names a style with a tag such as `[calm]`.
+    styles maps a style name to the recording a sentence of that style
+    clones, and a sentence of a style it lacks clones reference_audio_path;
+    the language model names a style with a tag such as [calm].
     """
 
     kind: Literal["openai_speech"] = "openai_speech"
@@ -177,9 +179,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     async def follow_deltas(
         self,
         deltas: AsyncIterator[TimedChunk],
-        style_starts: list[tuple[int, str | None]],
+        delta_styles: list[tuple[int, str | None]],
     ) -> AsyncIterator[TimedChunk]:
-        """The reply's deltas, recording the user language they carry and, in style_starts, the reply offset each delta starts at with its style."""
+        """The reply's deltas, recording the user language they carry and, in delta_styles, the reply offset each delta starts at with its style."""
         text_start = 0
         async for chunk in deltas:
             language = chunk_language(chunk)
@@ -187,7 +189,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 self.session_language = language
             else:
                 pass
-            style_starts.append((text_start, chunk.payload.get("style")))
+            delta_styles.append((text_start, chunk_style(chunk)))
             text_start += len(chunk.payload["text"])
             yield chunk
 
@@ -211,7 +213,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 pass
         else:
             pass
-        if style is not None:
+        if style in self.config.styles:
             body["references"] = [self.config.styles[style].model_dump()]
         elif self.config.reference_audio_path:
             body["references"] = [
@@ -258,9 +260,9 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
     ) -> None:
         text_end = 0
         audio_ms = 0.0
-        style_starts: list[tuple[int, str | None]] = []
+        delta_styles: list[tuple[int, str | None]] = []
         async for span in sentences(
-            self.follow_deltas(deltas, style_starts), self.config.max_sentence_words
+            self.follow_deltas(deltas, delta_styles), self.config.max_sentence_words
         ):
             text = UNSPOKEN_SYMBOLS.sub("", MARKDOWN_LINK.sub(r"\1", span))
             text = TABLE_PIPE.sub(
@@ -274,7 +276,7 @@ class OpenAISpeechSynthesizer(TurnSpeaker):
                 spoken_start = text_end + len(span) - len(span.lstrip())
                 style = next(
                     delta_style
-                    for text_start, delta_style in reversed(style_starts)
+                    for text_start, delta_style in reversed(delta_styles)
                     if text_start <= spoken_start
                 )
                 async for samples in self.speak(sentence, style):

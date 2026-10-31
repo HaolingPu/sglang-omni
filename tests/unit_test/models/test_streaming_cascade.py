@@ -51,7 +51,10 @@ from sglang_omni.models.streaming_cascade.running_transcript import (
     RunningTranscript,
     RunningTranscriptConfig,
 )
-from sglang_omni.models.streaming_cascade.session import ComponentHooks
+from sglang_omni.models.streaming_cascade.session import (
+    ComponentHooks,
+    ComponentSession,
+)
 from sglang_omni.proto import StagePayload
 from sglang_omni.proto.request import OmniRequest
 from sglang_omni.proto.session import SessionIdentity, TimedChunk
@@ -868,7 +871,7 @@ async def test_a_finished_reply_the_model_ends_with_an_ellipsis_does_not_read_as
 async def test_the_prompt_puts_back_the_style_tags_of_the_reply_the_history_keeps(
     heard_ms, cut_reply
 ):
-    """The history keeps each reply's text, and the prompts after it show the tag before the first text of each style; a style whose text the cut dropped shows no tag."""
+    """The prompts after a styled reply showed it without its tags; the history keeps only the reply text, and a style whose text the cut dropped shows no tag."""
     dialog = build({"kind": "dialog"})
     outputs = await drain(
         dialog,
@@ -2490,7 +2493,7 @@ async def test_chat_deltas_carry_the_language_of_their_messages():
 async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_sentences_after_it(
     profile, reply, recordings
 ):
-    """A tag naming a style of the synthesizer, in any letter case and even split across deltas, is not in the reply text the client, aligner and history read, and each sentence from it on clones that style's recording; a profile without styles keeps every tag as the model wrote it."""
+    """A tag written as [Cheerful] or split across deltas reached the client, the aligner and the speech service as text; each sentence from a tag on clones that style's recording, and a profile without styles keeps every tag as the model wrote it."""
     graph = profile_config(profile).component_graph()
     generator = build(graph.node("llm").component.model_dump())
     generator.place(graph, "llm")
@@ -2529,15 +2532,70 @@ async def test_a_style_tag_leaves_the_reply_text_and_picks_the_recording_of_the_
 
 
 def test_the_styles_profile_holds_every_reply_to_a_tag_its_synthesizer_clones():
-    """The regex the language model decodes under names exactly the speech node's styles and makes a reply start with one in brackets."""
+    """Without the regex Qwen3.8-27B left the brackets off a tag or named a style the speech node lacks, and the speech service read the word out."""
     graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
     regex = str(graph.node("llm").component.extra_body["regex"])
-    assert set(re.search(r"\(([a-z|]+)\)", regex).group(1).split("|")) == set(
-        graph.node("tts").component.styles
+    for style in graph.node("tts").component.styles:
+        assert re.fullmatch(regex, f"[{style}] Take a slow breath.")
+        assert f"[{style}]" in graph.node("dialog").component.system_prompt
+    for reply in (
+        "sympathetic That sounds hard.",
+        "Cheerful] That is wonderful.",
+        "[surprised] Oh, really?",
+        "[calm] Take a [slow] breath.",
+    ):
+        assert not re.fullmatch(regex, reply)
+
+
+@pytest.mark.asyncio
+async def test_a_configure_that_changes_the_speech_styles_reaches_the_chat_node():
+    """A configure that gave the speech node a style left the chat node's style list as it was, so the new tag stayed in the reply and was spoken."""
+    graph = profile_config("qwen3-asr-qwen3.8-27b-vivian-styles").component_graph()
+    session = ComponentSession("llm", graph)
+    session.emit = lambda chunk: None
+    await session.configure(
+        control_chunk(
+            CONFIGURE,
+            nodes={
+                "tts": {"styles": {"whisper": {"audio_path": "w.wav", "text": "Hush."}}}
+            },
+        )
     )
-    assert re.fullmatch(regex, "[calm] Take a slow breath.")
-    assert not re.fullmatch(regex, "calm Take a slow breath.")
-    assert not re.fullmatch(regex, "[calm] Take a [slow] breath.")
+    assert "whisper" in session.component.styles
+
+
+@pytest.mark.asyncio
+async def test_a_sentence_of_a_style_the_speech_node_lacks_clones_its_own_recording():
+    """A style the speech node lacks, as from a chat node that also feeds a speech node with other styles, raised KeyError and ended the session."""
+    bodies = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        return httpx.Response(
+            200, content=b"\x00\x00" * 4, headers={"X-Sample-Rate": "24000"}
+        )
+
+    tts = build(
+        {
+            "kind": "openai_speech",
+            **HTTP_SERVICE,
+            "reference_audio_path": "vivian.wav",
+            "styles": {"calm": {"audio_path": "calm.wav", "text": "Breathe."}},
+        }
+    )
+    tts.client = httpx.AsyncClient(transport=httpx.MockTransport(answer))
+    await drain(
+        tts,
+        [
+            text_chunk("Hush now. ", 1, style="whisper"),
+            text_chunk("Breathe in.", 1, style="calm"),
+            control_chunk(TURN_DONE, turn=1),
+        ],
+    )
+    assert [body["references"][0]["audio_path"] for body in bodies] == [
+        "vivian.wav",
+        "calm.wav",
+    ]
 
 
 async def spoken_requests(

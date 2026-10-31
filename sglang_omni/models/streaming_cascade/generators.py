@@ -76,7 +76,7 @@ class ChatEvent(BaseModel):
 class OpenAIChatGenerator(Replier):
     """One streamed completion per messages chunk, closed by turn.done; the deltas carry the messages chunk's language.
 
-    A tag such as `[calm]` naming a style of a synthesizer that reads the
+    A tag such as [calm] naming a style of a synthesizer that reads the
     deltas leaves the reply text, and the deltas after it carry that style.
     """
 
@@ -131,19 +131,20 @@ class OpenAIChatGenerator(Replier):
             r"\[(" + "|".join(map(re.escape, self.styles)) + r")\]", re.IGNORECASE
         )
         style: str | None = None
-        held = ""
+        partial_tag = ""
         is_after_tag = False
         async for delta in self.complete(messages):
-            received = held + (delta.content or "")
+            received = partial_tag + (delta.content or "")
             tag_start = received.rfind("[")
-            if tag_start >= 0 and any(
-                f"[{name}]".startswith(received[tag_start:].lower())
-                and f"[{name}]" != received[tag_start:].lower()
-                for name in style_names
+            tail = received[tag_start:].lower()
+            if (
+                tag_start >= 0
+                and not tail.endswith("]")
+                and any(f"[{name}]".startswith(tail) for name in style_names)
             ):
-                received, held = received[:tag_start], received[tag_start:]
+                received, partial_tag = received[:tag_start], received[tag_start:]
             else:
-                held = ""
+                partial_tag = ""
             pieces = style_tag.split(received) if self.styles else [received]
             for index, piece in enumerate(pieces):
                 if index % 2 == 1:
@@ -158,8 +159,8 @@ class OpenAIChatGenerator(Replier):
                     emit(text_chunk(piece, turn, language, style))
                 else:
                     pass
-        if held:
-            emit(text_chunk(held, turn, language, style))
+        if partial_tag:
+            emit(text_chunk(partial_tag, turn, language, style))
         else:
             pass
         emit(control_chunk(TURN_DONE, turn=turn))

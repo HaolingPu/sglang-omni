@@ -35,6 +35,7 @@ from sglang_omni.proto.streams import (
     TURN_QUEUED,
     TURN_STARTED,
     chunk_language,
+    chunk_style,
     control_type,
 )
 from sglang_omni.scheduling.session import ChunkEmitter
@@ -67,7 +68,7 @@ CUT_REPLY_NOTE = "A reply of yours that ends with … was cut off when the user 
 
 
 def tagged(content: str, style_starts: list[tuple[int, str]]) -> str:
-    """The reply with the tag `[style]` back before the first text of each style it keeps."""
+    """The reply with the tag [style] back before the first text of each style it keeps."""
     for text_start, style in reversed(style_starts):
         if text_start < len(content):
             content = f"{content[:text_start]}[{style}] {content[text_start:]}"
@@ -93,7 +94,7 @@ def prompt_messages(messages: list[ChatMessage]) -> list[ChatMessage]:
         elif message.role == "assistant":
             # note (Haoling Pu): the model sometimes ends a finished reply with …, which would read as cut and was followed by an empty reply in a live run.
             content = message.content.rstrip().removesuffix("…")
-            # note (Haoling Pu): with the tags left out of its earlier replies Qwen3.8-27B stopped naming styles after a few turns, tagging 7 of 16 replies in eight-turn English conversations, against 16 of 16 with them.
+            # note (Haoling Pu): decoding without a regex, under a prompt that asked for a tag only when a feeling fit, Qwen3.8-27B tagged 7 of 16 emotional turns of six-turn English conversations when its earlier replies were shown without their tags, against 16 of 16 with them.
             prompt.append(
                 ChatMessage(
                     role="assistant", content=tagged(content, message.style_starts)
@@ -147,7 +148,7 @@ class Dialog(StreamComponent):
     settings apply at once and reach the next prompt.
 
     A reply whose deltas carry a style shows the model, in later prompts,
-    the tag `[style]` before the first text of each style; the history,
+    the tag [style] before the first text of each style; the history,
     its cuts and their offsets count only the reply text.
 
     Speech that started after an utterance ended and has not stopped when
@@ -259,7 +260,7 @@ class Dialog(StreamComponent):
             )
             self.emit(control_chunk(TURN_QUEUED, turn=self.turns))
         elif chunk.format == TEXT_DELTA and self.is_reply(chunk):
-            style = chunk.payload.get("style")
+            style = chunk_style(chunk)
             if style is not None and (
                 not self.reply_style_starts or self.reply_style_starts[-1][1] != style
             ):
