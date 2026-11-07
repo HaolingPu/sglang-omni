@@ -78,7 +78,7 @@ All input modality combinations work with both text-only and speech servers.
 
 ### Sampling Parameters
 
-Standard sampling parameters apply to the thinker stage. When `modalities` includes `"audio"`, the additional talker-specific parameters below control the speech generation independently.
+Standard sampling parameters apply to the thinker stage. When `modalities` includes `"audio"`, the additional talker-specific parameters below control the speech generation independently. A negative `temperature` or `talker_temperature` returns HTTP 422.
 
 | Parameter | Type | Default | Applies to |
 |---|---|---|---|

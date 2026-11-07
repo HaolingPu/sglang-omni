@@ -849,11 +849,14 @@ def test_chat_stream_failure_before_output_reports_error_before_done_sentinel(
         ({"max_tokens": 0}, "max_tokens"),
         ({"max_tokens": -1}, "max_tokens"),
         ({"max_completion_tokens": 0}, "max_completion_tokens"),
+        ({"temperature": -1}, "temperature"),
+        ({"talker_temperature": -1}, "talker_temperature"),
     ],
 )
 def test_chat_rejects_invalid_envelope_before_generation(
     invalid_fields: dict[str, int | list[str]], field: str
 ) -> None:
+    """An out-of-range chat field must return 422 before generation; temperature=-1 and talker_temperature=-1 were accepted."""
     client = TestClient(create_app(fault_client("qwen3-omni"), model_name="qwen3-omni"))
 
     response = client.post(

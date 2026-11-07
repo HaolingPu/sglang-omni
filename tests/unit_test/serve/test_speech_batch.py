@@ -424,6 +424,21 @@ def test_batch_speech_rejects_non_positive_default_duration_fields(
     assert client_impl.requests == []
 
 
+def test_batch_speech_rejects_negative_default_temperature() -> None:
+    """POST /v1/audio/speech/batch with a default temperature=-1 synthesized every item instead of returning 400."""
+    client_impl = RecordingBatchSpeechClient()
+    client = TestClient(create_app(client_impl, model_name="tts"))
+
+    response = client.post(
+        "/v1/audio/speech/batch",
+        json={"temperature": -1, "items": [{"input": "one"}]},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["param"] == "temperature"
+    assert client_impl.requests == []
+
+
 def test_batch_speech_rejects_stringified_item_integer_overrides() -> None:
     client_impl = RecordingBatchSpeechClient()
     client = TestClient(create_app(client_impl, model_name="tts"))

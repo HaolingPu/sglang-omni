@@ -533,9 +533,9 @@ def test_a_preprocessed_request_is_admitted_with_the_engine_cap(
     ("change", "error"),
     [
         pytest.param(
-            {"temperature": -0.5},
+            {"temperature": float("inf")},
             "temperature must be finite and >= 0",
-            id="negative-temperature",
+            id="infinite-temperature",
         ),
         pytest.param({"top_p": 1.5}, "top_p must be in (0, 1]", id="top-p-above-one"),
         pytest.param({"top_k": 0}, "top_k must be in [1, 2147483647]", id="zero-top-k"),

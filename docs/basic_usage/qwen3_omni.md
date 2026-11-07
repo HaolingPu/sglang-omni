@@ -748,7 +748,7 @@ The table below lists all parameters accepted by the `/v1/chat/completions` endp
 | `videos` | list | `null` | List of video file paths (local paths or URLs) |
 | `max_tokens` | int | `null` | Maximum number of tokens to generate |
 | `max_completion_tokens` | int | `null` | OpenAI-compatible alias for `max_tokens` |
-| `temperature` | float | `null` | Sampling temperature |
+| `temperature` | float | `null` | Sampling temperature. A negative value returns HTTP 422 |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |

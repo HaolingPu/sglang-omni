@@ -241,7 +241,9 @@ class SpeechRequestValidator:
         try:
             request = CreateSpeechBatchRequest.model_validate(payload)
         except ValidationError as exc:
-            raise bad_request(validation_error_message(exc)) from exc
+            raise bad_request(
+                validation_error_message(exc), param=validation_error_param(exc)
+            ) from exc
         if not request.items:
             raise bad_request("items must contain at least one request", param="items")
         else:
@@ -289,7 +291,9 @@ class SpeechRequestValidator:
         try:
             request = CreateSpeechRequest.model_validate(payload)
         except ValidationError as exc:
-            raise bad_request(validation_error_message(exc)) from exc
+            raise bad_request(
+                validation_error_message(exc), param=validation_error_param(exc)
+            ) from exc
         return request
 
     def prepare_request(self, request: CreateSpeechRequest) -> CreateSpeechRequest:

@@ -707,6 +707,18 @@ def test_speech_websocket_rejects_non_positive_duration_fields(
     assert event["param"] == field_name
 
 
+def test_speech_websocket_rejects_negative_temperature() -> None:
+    """A /v1/audio/speech/stream session.config with temperature=-1 was configured instead of refused."""
+    client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
+
+    with client.websocket_connect("/v1/audio/speech/stream") as websocket:
+        websocket.send_json(session_config(response_format="pcm", temperature=-1))
+        event = websocket.receive_json()
+
+    assert event["type"] == "error"
+    assert event["param"] == "temperature"
+
+
 def test_speech_websocket_streaming_accepts_speed() -> None:
     client = TestClient(create_app(StreamingSpeechClient(), model_name="tts"))
 

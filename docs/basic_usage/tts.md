@@ -709,7 +709,7 @@ The table below lists all parameters accepted by the `/v1/audio/speech` endpoint
 | `token_count` | int | `null` | Model-specific duration token target |
 | `duration_tokens` | int | `null` | Alias-style duration token target for models that expose duration control |
 | `x_vector_only_mode` | bool | `null` | Qwen3-TTS Base speaker-embedding mode |
-| `temperature` | float | `null` | Sampling temperature |
+| `temperature` | float | `null` | Sampling temperature. A negative value returns HTTP 400 |
 | `top_p` | float | `null` | Top-p sampling |
 | `top_k` | int | `null` | Top-k sampling |
 | `repetition_penalty` | float | `null` | Repetition penalty |

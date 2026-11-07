@@ -751,7 +751,10 @@ def speech_error_from_exception(exc: Exception) -> SpeechAPIError:
         first_error = exc.errors()[0] if exc.errors() else {}
         message = first_error.get("msg") or "invalid speech WebSocket config"
         location = ".".join(str(item) for item in first_error.get("loc", ()))
-        return bad_request(f"{location}: {message}" if location else str(message))
+        return bad_request(
+            f"{location}: {message}" if location else str(message),
+            param=location or None,
+        )
     else:
         pass
     return bad_request(str(exc))

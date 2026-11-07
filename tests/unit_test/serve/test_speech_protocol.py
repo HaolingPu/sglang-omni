@@ -514,11 +514,13 @@ def test_speech_service_rejects_boolean_seed() -> None:
         ({"input": "hello", "max_new_tokens": 0}, "max_new_tokens"),
         ({"input": "hello", "token_count": 0}, "token_count"),
         ({"input": "hello", "duration_tokens": 0}, "duration_tokens"),
+        ({"input": "hello", "temperature": -1}, "temperature"),
     ],
 )
 def test_speech_service_rejects_invalid_boundary_values(
     payload: dict[str, object], expected_param: str
 ) -> None:
+    """An out-of-range speech field must return 400 naming the field; temperature=-1 was accepted."""
     service = SpeechRequestValidator(default_model="tts")
 
     with pytest.raises(SpeechAPIError) as exc_info:

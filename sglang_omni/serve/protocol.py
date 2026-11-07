@@ -130,7 +130,7 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage]
 
     # Sampling parameters
-    temperature: float | None = None
+    temperature: float | None = Field(default=None, ge=0.0)
     top_p: float | None = None
     top_k: int | None = None
     min_p: float | None = None
@@ -172,7 +172,7 @@ class ChatCompletionRequest(BaseModel):
     stage_params: dict[str, dict[str, object]] | None = None
 
     # Talker-specific overrides for Qwen3-Omni speech output
-    talker_temperature: float | None = None
+    talker_temperature: float | None = Field(default=None, ge=0.0)
     talker_top_p: float | None = None
     talker_top_k: int | None = None
     talker_repetition_penalty: float | None = None
@@ -494,7 +494,7 @@ class CreateSpeechRequest(BaseModel):
 
     # Generation parameters
     max_new_tokens: int | None = None
-    temperature: float | None = None
+    temperature: float | None = Field(default=None, ge=0.0)
     top_p: float | None = None
     top_k: int | None = None
     epsilon_cutoff: float | None = None
@@ -570,7 +570,7 @@ class CreateSpeechBatchRequest(BaseModel):
     duration_tokens: int | None = None
     max_new_tokens: int | None = None
     initial_codec_chunk_frames: int | None = None
-    temperature: float | None = None
+    temperature: float | None = Field(default=None, ge=0.0)
     top_p: float | None = None
     top_k: int | None = None
     epsilon_cutoff: float | None = None
