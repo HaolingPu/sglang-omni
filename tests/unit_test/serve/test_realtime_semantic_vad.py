@@ -127,6 +127,20 @@ async def test_invalid_semantic_update_preserves_live_state():
 
 
 @pytest.mark.asyncio
+async def test_negative_temperature_update_is_rejected():
+    """A session.update with temperature -1 was accepted and later responses sampled at -1."""
+    session = make_session(FakeDetector())
+
+    await session.dispatch({"type": "session.update", "session": {"temperature": -1}})
+
+    assert session.sampling().temperature == 0.8
+    error = session.send.await_args.args[0]
+    assert error["type"] == "error"
+    assert error["error"]["code"] == "invalid_value"
+    assert "temperature" in error["error"]["message"]
+
+
+@pytest.mark.asyncio
 async def test_same_type_partial_update_preserves_semantic_type():
     initial, replacement = FakeDetector(), FakeDetector()
     session = make_session(initial)

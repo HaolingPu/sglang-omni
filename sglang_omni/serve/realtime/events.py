@@ -54,6 +54,7 @@ class SessionConfig(EventBase):
     input_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] | None = None
     output_audio_format: Literal["pcm16", "g711_ulaw", "g711_alaw"] | None = None
     turn_detection: TurnDetection | None = None
+    # note (Haoling Pu): SessionObject holds the bound; a SessionConfig validation error escapes dispatch and closes the socket without an error event.
     temperature: float | None = None
     max_response_output_tokens: int | str | None = None
 
@@ -79,7 +80,7 @@ class SessionObject(EventBase):
     input_audio_format: str = "pcm16"
     output_audio_format: str = "pcm16"
     turn_detection: TurnDetection | None = None
-    temperature: float = 0.8
+    temperature: float = Field(default=0.8, ge=0.0)
     max_response_output_tokens: int | str = "inf"
 
 

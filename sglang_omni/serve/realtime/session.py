@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from typing import Mapping, TypedDict, overload
 
 from fastapi import WebSocket
+from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 from typing_extensions import Unpack
 
@@ -205,19 +206,27 @@ class RealtimeSession:
         update.pop("capabilities", None)
         current = self.session_object.model_dump(mode="json")
         turn_detection_update = update.pop("turn_detection", _UNSET)
-        try:
-            if turn_detection_update is not _UNSET:
+        if turn_detection_update is not _UNSET:
+            try:
                 current["turn_detection"] = self.merge_turn_detection(
                     current.get("turn_detection"),
                     turn_detection_update,
                 )
-            else:
-                pass
+            except ValueError as exc:
+                await self.send_error(
+                    "invalid_request_error",
+                    "invalid_turn_detection",
+                    str(exc),
+                )
+                return
+        else:
+            pass
+        try:
             candidate = SessionObject.model_validate(current | update)
-        except ValueError as exc:
+        except ValidationError as exc:
             await self.send_error(
                 "invalid_request_error",
-                "invalid_turn_detection",
+                "invalid_value",
                 str(exc),
             )
             return
